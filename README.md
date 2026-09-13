@@ -105,6 +105,7 @@ oscilloscope-standalone.html    单文件版（生成物，但要提交）
 docs/                           预览图
 test/verify.js                  49 项端到端验证
 test/bench.js                   性能基准
+LICENSE                         Apache License 2.0（取自 apache.org 原文，仅填入版权行）
 ```
 
 **音频文件不进版本库**（两个测试文件合计约 300 MB），见 `.gitignore`。
@@ -122,4 +123,4 @@ test/bench.js                   性能基准
 
 ## 许可
 
-MIT
+[Apache License 2.0](LICENSE) · Copyright 2026 CHT-1192
