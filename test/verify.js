@@ -514,6 +514,58 @@ async function renderTests(pw) {
   else bad('picture survives a settings change while paused', `${toggledInk} lit pixels`);
   await page.evaluate(() => document.querySelector('[data-toggle="grid"]').click());
 
+  /* ---- burn-in layer --------------------------------------------------- */
+  const layerInk = (id) => page.evaluate((id) => {
+    const c = document.getElementById(id);
+    const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+    let lit = 0, max = 0;
+    for (let i = 3; i < d.length; i += 4) { if (d[i] > 8) lit++; if (d[i] > max) max = d[i]; }
+    return { lit, max };
+  }, id);
+  const setBurn = (v) => page.evaluate((v) => {
+    const el = document.querySelector('[data-set="burnIn"]');
+    el.value = String(v);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  }, v);
+
+  await page.evaluate(() => {
+    const a = document.getElementById('audio');
+    if (a.paused) document.getElementById('btnPlay').click();
+  });
+  await page.waitForTimeout(600);
+
+  const burnIdle = await layerInk('burnin');       // off by default
+  await setBurn(100);                              // 100% = permanent
+  await page.waitForTimeout(6000);
+  const burnOn = await layerInk('burnin');
+  if (burnIdle.lit === 0) ok('burn-in layer starts empty', 'off by default');
+  else bad('burn-in layer starts empty', `${burnIdle.lit} px`);
+  if (burnOn.lit > 500) ok('burn-in accumulates beam exposure', `${burnOn.lit} px, peak alpha ${burnOn.max}`);
+  else bad('burn-in accumulates beam exposure', JSON.stringify(burnOn));
+
+  await page.evaluate(() => document.getElementById('audio').pause());
+  await page.waitForTimeout(2600);
+  const burnPaused = await layerInk('burnin');
+  const tracePaused = await layerInk('trace');
+  if (burnPaused.lit >= burnOn.lit * 0.98) {
+    ok('burn-in survives a pause', `${burnPaused.lit} px (was ${burnOn.lit})`);
+  } else {
+    bad('burn-in survives a pause', `${burnPaused.lit} vs ${burnOn.lit}`);
+  }
+  if (burnPaused.lit > tracePaused.lit * 2) {
+    ok('the ghost lives on its own layer, not in the afterglow',
+      `burn-in ${burnPaused.lit} px vs afterglow ${tracePaused.lit} px`);
+  } else {
+    bad('the ghost lives on its own layer, not in the afterglow',
+      `burn-in ${burnPaused.lit} vs afterglow ${tracePaused.lit}`);
+  }
+
+  await setBurn(0);
+  await page.waitForTimeout(400);
+  const burnCleared = await layerInk('burnin');
+  if (burnCleared.lit === 0) ok('turning burn-in off wipes the ghost');
+  else bad('turning burn-in off wipes the ghost', `${burnCleared.lit} px`);
+
   await page.evaluate(() => document.querySelector('#btnList').click());
   await page.waitForTimeout(400);
   await page.screenshot({ path: path.join(SHOTS, 'playlist.png') });

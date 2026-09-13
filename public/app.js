@@ -66,7 +66,7 @@
   const DEFAULTS = {
     gainX: 1, gainY: 1, offX: 0, offY: 0,
     windowIdx: 3,
-    intensity: 0.9, lineWidth: 1.15, persistence: 62,
+    intensity: 0.9, lineWidth: 1.15, persistence: 62, burnIn: 0,
     color: '#3dff9c',
     rateMode: 'auto',
     renderScale: 'auto',
@@ -80,7 +80,7 @@
   /* -------------------------------------------------------------------- dom */
 
   const dom = {
-    stage: $('stage'), bg: $('bg'), trace: $('trace'), audio: $('audio'),
+    stage: $('stage'), bg: $('bg'), burnin: $('burnin'), trace: $('trace'), audio: $('audio'),
     hint: $('dropHint'), hintNote: $('hintNote'),
     trackTitle: $('trackTitle'), trackSub: $('trackSub'),
     seek: $('seek'), tCur: $('tCur'), tDur: $('tDur'),
@@ -94,6 +94,7 @@
   };
 
   const bctx = dom.bg.getContext('2d');
+  const nctx = dom.burnin.getContext('2d');   // burn-in layer
   const tctx = dom.trace.getContext('2d');
 
   /* --------------------------------------------------------------- geometry */
@@ -182,6 +183,7 @@
 
     DPR = dpr; W = w; H = h;
     dom.bg.width = W; dom.bg.height = H;
+    dom.burnin.width = W; dom.burnin.height = H;   // NB: resizing clears the burn-in
     dom.trace.width = W; dom.trace.height = H;
 
     PLOT = Math.min(W, H) * 0.86;
@@ -912,6 +914,56 @@
     return Math.pow(1 - p, 2) * 0.97 + 0.03;
   }
 
+  /** Erase a layer by `alpha` — pure subtraction, never addition. */
+  function fadeLayer(ctx, alpha) {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.fillStyle = `rgba(0,0,0,${alpha})`;
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  /* ---- burn-in ---------------------------------------------------------- */
+  /* A second accumulation layer that decays far more slowly than the afterglow:
+     it models phosphor *damage* rather than phosphor decay. Exposure is the
+     time-integral of beam current, so it is laid down from the same beam path
+     (and the same retrace blanking) as the trace — still crisp strokes, not a
+     blur, which is why it is not glow.
+
+     The exposure rate comes from a FRACTIONAL BUDGET, not from a tiny alpha: a
+     per-frame alpha below ~1/255 rounds away on an 8-bit backing store and
+     would never accumulate at all, so each painting uses a healthy alpha and
+     paintings are simply spaced out.
+     0 % = off, 100 % = permanent (never decays). */
+  const burn = { on: false, gain: 0.03, rate: 0, decay: 0, budget: 0, fadeTick: 0 };
+
+  function clearBurnIn() {
+    if (!W || !H) return;
+    nctx.setTransform(1, 0, 0, 1, 0, 0);
+    nctx.globalAlpha = 1;
+    nctx.globalCompositeOperation = 'source-over';
+    nctx.clearRect(0, 0, W, H);
+    burn.budget = 0;
+    needsRedraw = true;
+  }
+
+  function updateBurnIn(force) {
+    const b = clamp(S.burnIn / 100, 0, 1);
+    const was = burn.on;
+    burn.on = b > 0.001;
+    burn.gain = 0.03;                      // per painting, well clear of 1/255
+    burn.rate = 0.02 * b;                  // paintings per frame (~1.2/s at 100%)
+    // Steady state for a pixel the beam keeps returning to is roughly
+    // rate*gain/decay, so decay is what decides how strong the ghost gets.
+    burn.decay = b >= 0.99 ? 0 : 0.0012 * Math.pow(1 - b, 2);
+    burn.budget = 0;
+    burn.fadeTick = 0;
+    if (force || (was && !burn.on)) clearBurnIn();   // turning it off wipes the ghost
+    const out = document.querySelector('[data-out="burnIn"]');
+    if (out) out.textContent = FORMATTERS.burnIn(S.burnIn);
+  }
+
   /** Rising zero-crossing on X, used to phase-lock periodic figures. */
   function findTrigger(buf, maxStart, n) {
     const limit = Math.min(maxStart, n);
@@ -943,7 +995,7 @@
     return true;
   }
 
-  function drawTrace(n) {
+  function drawTrace(n, live) {
     const m = n - 1;
     const maxStart = Math.max(0, analyserSize - n);
 
@@ -1020,50 +1072,69 @@
     lastPeakR = peakR;
 
     /* ---- paint ---------------------------------------------------------- */
-    const lw = S.lineWidth * DPR;
-    tctx.lineWidth = lw;
-    tctx.lineJoin = 'round';
-    tctx.lineCap = 'round';
-    tctx.strokeStyle = S.color;
+    paintInto(tctx, n, S.intensity);
 
-    if (!blanking) {
-      // Plain beam path: one continuous polyline, never closed.
-      tctx.globalAlpha = clamp(S.intensity, 0, 1);
-      tctx.beginPath();
-      tctx.moveTo(PX[0], PY[0]);
-      for (let i = 1; i < n; i++) tctx.lineTo(PX[i], PY[i]);
-      tctx.stroke();
-    } else {
-      // Bucket 0 collects sweeps that are >BUCKETS× faster than the typical beam
-      // speed. Those are retrace / blanking strokes: on a CRT the beam is racing
-      // so they carry almost no charge per unit length, and under afterglow even
-      // a very dim one would still accumulate frame after frame into a visible
-      // chord. So they are dropped outright — this is what removes retrace lines
-      // for good, rather than merely fading them.
-      for (let b = 1; b < BUCKETS; b++) {
-        const cnt = BUCKET_N[b];
-        if (!cnt) continue;
-        const base = b * MAXN;
-        tctx.globalAlpha = clamp(S.intensity * (b / (BUCKETS - 1)), 0, 1);
-        tctx.beginPath();
-        let prev = -2;
-        for (let k = 0; k < cnt; k++) {
-          const si = BUCKET_IDX[base + k];
-          if (si !== prev + 1) tctx.moveTo(PX[si], PY[si]);   // contiguous runs skip the moveTo
-          tctx.lineTo(PX[si + 1], PY[si + 1]);
-          prev = si;
-        }
-        tctx.stroke();
+    // Burn-in: the same beam path laid down a second time on the slow layer.
+    // Only while the beam is actually running — a paused scope has no beam, so
+    // re-settling the afterglow must not keep exposing the phosphor.
+    if (burn.on && live) {
+      burn.budget += burn.rate;
+      if (burn.budget >= 1) {
+        burn.budget = Math.min(burn.budget - 1, 1);   // never burst after a stall
+        paintInto(nctx, n, burn.gain);
       }
     }
-    tctx.globalAlpha = 1;
 
     if (S.beamDot) {
+      const lw = S.lineWidth * DPR;
       tctx.fillStyle = S.color;
       tctx.beginPath();
       tctx.arc(PX[n - 1], PY[n - 1], Math.max(1.5 * DPR, lw * 1.4), 0, TAU);
       tctx.fill();
     }
+  }
+
+  /** Stroke the already-computed beam path into `ctx` with `base` as the peak
+   *  alpha. Shared by the afterglow layer and the burn-in layer. */
+  function paintInto(ctx, n, base) {
+    ctx.lineWidth = S.lineWidth * DPR;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = S.color;
+
+    if (!S.blanking) {
+      // Plain beam path: one continuous polyline, never closed.
+      ctx.globalAlpha = clamp(base, 0, 1);
+      ctx.beginPath();
+      ctx.moveTo(PX[0], PY[0]);
+      for (let i = 1; i < n; i++) ctx.lineTo(PX[i], PY[i]);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      return;
+    }
+
+    // Bucket 0 collects sweeps that are >BUCKETS× faster than the typical beam
+    // speed. Those are retrace / blanking strokes: on a CRT the beam is racing
+    // so they carry almost no charge per unit length, and under afterglow even
+    // a very dim one would still accumulate frame after frame into a visible
+    // chord. So they are dropped outright — this is what removes retrace lines
+    // for good, rather than merely fading them.
+    for (let b = 1; b < BUCKETS; b++) {
+      const cnt = BUCKET_N[b];
+      if (!cnt) continue;
+      const base0 = b * MAXN;
+      ctx.globalAlpha = clamp(base * (b / (BUCKETS - 1)), 0, 1);
+      ctx.beginPath();
+      let prev = -2;
+      for (let k = 0; k < cnt; k++) {
+        const si = BUCKET_IDX[base0 + k];
+        if (si !== prev + 1) ctx.moveTo(PX[si], PY[si]);   // contiguous runs skip the moveTo
+        ctx.lineTo(PX[si + 1], PY[si + 1]);
+        prev = si;
+      }
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
   }
 
   /* ------------------------------------------------------------ main loop */
@@ -1105,17 +1176,19 @@
     needsRedraw = false;
 
     const workStart = performance.now();
-    tctx.setTransform(1, 0, 0, 1, 0, 0);
-    tctx.globalAlpha = 1;
     // Afterglow is pure subtraction: destination-out only ever removes alpha,
     // so a bright pixel can never bleed light into its neighbours.
-    tctx.globalCompositeOperation = 'destination-out';
-    tctx.fillStyle = `rgba(0,0,0,${fadeAlpha()})`;
-    tctx.fillRect(0, 0, W, H);
-    tctx.globalCompositeOperation = 'source-over';
+    fadeLayer(tctx, fadeAlpha());
+    // The burn-in layer decays ~100x more slowly than the afterglow, so its
+    // fade is batched into one pass every 4th frame with 4x the alpha — the
+    // curve is identical and it keeps the layer essentially free.
+    if (burn.on && burn.decay > 0 && ++burn.fadeTick >= 4) {
+      burn.fadeTick = 0;
+      fadeLayer(nctx, Math.min(1, burn.decay * 4));
+    }
 
     try {
-      drawTrace(winSize());
+      drawTrace(winSize(), live);
     } catch (err) {
       if (!loop.warned) { loop.warned = true; console.error('[scope] render error', err); }
     }
@@ -1158,6 +1231,7 @@
     intensity: (v) => Number(v).toFixed(2),
     lineWidth: (v) => Number(v).toFixed(2) + ' px',
     persistence: (v) => Math.round(v) + ' %',
+    burnIn: (v) => (v <= 0 ? '关' : v >= 99.5 ? '永久' : Math.round(v) + ' %'),
     color: (v) => String(v).toUpperCase(),
   };
 
@@ -1183,6 +1257,7 @@
     if (rm) rm.value = S.rateMode;
     const rs = $('renderScale');
     if (rs) rs.value = S.renderScale;
+    updateBurnIn(false);
     applyAccent(S.color);
   }
 
@@ -1195,6 +1270,7 @@
         if (out) out.textContent = FORMATTERS[key](S[key]);
         if (key === 'color') applyAccent(S.color);
         if (key === 'windowIdx') { refSpeed = 0; applyAnalyserSize(); }
+        if (key === 'burnIn') updateBurnIn(false);
         needsRedraw = true;
       };
       el.addEventListener('input', onInput);
@@ -1368,6 +1444,7 @@
     applyAnalyserSize();
     applyScale();
     drawBackground();
+    updateBurnIn(true);
     needsRedraw = true;
     settle = 100;
   }

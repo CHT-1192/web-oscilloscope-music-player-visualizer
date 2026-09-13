@@ -134,6 +134,8 @@ const CONFIGS = [
   { label: 'grid OFF', grid: false },
   { label: 'blanking OFF', blanking: false },
   { label: 'engine 48 kHz (resampled)', rateMode: 'device' },
+  { label: 'burn-in 100% (permanent)', burnIn: 100 },
+  { label: 'burn-in 60% (decaying)', burnIn: 60 },
 ];
 
 /** Shorter list for the under-load run, which is mostly a methodology check. */
@@ -141,6 +143,8 @@ const CONFIGS_QUICK = [
   { label: 'win 32768 (max)', windowIdx: 6 },
   { label: 'win 1024', windowIdx: 1 },
   { label: 'engine 48 kHz (resampled)', rateMode: 'device' },
+  { label: 'burn-in 100% (permanent)', burnIn: 100 },
+  { label: 'burn-in 60% (decaying)', burnIn: 60 },
 ];
 
 /** Background CPU burners, to emulate "I'm running a compile". */
@@ -197,6 +201,7 @@ async function main() {
     if (c.windowIdx != null) set('windowIdx', c.windowIdx);
     if (c.persistence != null) set('persistence', c.persistence);
     if (c.lineWidth != null) set('lineWidth', c.lineWidth);
+    if (c.burnIn != null) set('burnIn', c.burnIn);
     if (c.renderScale) {
       const s = document.getElementById('renderScale');
       s.value = c.renderScale;
