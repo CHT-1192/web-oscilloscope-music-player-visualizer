@@ -1,0 +1,26 @@
+{
+  "name": "web-oscilloscope-music-player-visualizer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Web-based oscilloscope music player & XY visualizer — Node.js server edition + single-file self-contained HTML edition. No retrace lines, no glow.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js --open",
+    "serve": "node server.js",
+    "build": "node build-standalone.js",
+    "test": "node test/verify.js",
+    "bench": "node test/bench.js"
+  },
+  "keywords": [
+    "oscilloscope",
+    "oscilloscope-music",
+    "lissajous",
+    "xy",
+    "visualizer",
+    "web-audio"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}

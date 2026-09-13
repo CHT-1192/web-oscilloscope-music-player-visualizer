@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<meta name="color-scheme" content="dark" />
+<meta name="description" content="网页版示波器音乐播放器 / XY 可视化器 — 左声道为 X 轴，右声道为 Y 轴。无回扫线，无辉光。" />
+<title>示波器音乐播放器 · Oscilloscope Music Player</title>
+<link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+PHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iNyIgZmlsbD0iIzAzMDYwYSIvPjxwYXRoIGQ9Ik00IDIxYzMuNiAwIDQuOC0xMyA4LjQtMTNzNC40IDE1IDggMTUgNC40LTkgNy42LTkiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzNkZmY5YyIgc3Ryb2tlLXdpZHRoPSIyLjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjxjaXJjbGUgY3g9IjE2IiBjeT0iMTYiIHI9IjE0LjQiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzNkZmY5YyIgc3Ryb2tlLW9wYWNpdHk9Ii4yMiIgc3Ryb2tlLXdpZHRoPSIxIi8+PC9zdmc+" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<main id="app">
+  <!-- ── 显示区：两块画布，下层静态背景/网格，上层余辉轨迹 ─────────────── -->
+  <div class="stage" id="stage">
+    <canvas id="bg" aria-hidden="true"></canvas>
+    <canvas id="trace" aria-label="示波器 XY 显示区"></canvas>
+  </div>
+
+  <!-- ── 空状态提示 ──────────────────────────────────────────────────── -->
+  <div class="hint" id="dropHint">
+    <div class="hint-card">
+      <div class="hint-mark">◉</div>
+      <h1>OSCILLOSCOPE<span>MUSIC</span></h1>
+      <p class="hint-main">把音频文件拖到这里，或 <button type="button" class="link" id="hintOpen">选择文件</button></p>
+      <p class="hint-sub">左声道 → X 轴 · 右声道 → Y 轴</p>
+      <p class="hint-tiny" id="hintNote"></p>
+    </div>
+  </div>
+
+  <!-- ── 顶栏 ────────────────────────────────────────────────────────── -->
+  <header class="topbar" id="topbar">
+    <div class="brand"><i></i>OSCILLOSCOPE<em>MUSIC</em></div>
+    <div class="rate-badge" id="rateBadge" title="">—</div>
+    <div class="rate-badge perf-badge" id="perfBadge" hidden>画质 100%</div>
+    <div class="tools">
+      <button type="button" class="tbtn" id="btnDemo" title="内置演示信号，无需音频文件 (D)">演示信号</button>
+      <button type="button" class="tbtn" id="btnShot" title="把当前画面保存为 PNG (S)">保存画面</button>
+      <button type="button" class="tbtn" id="btnFull" title="全屏 (F)">全屏</button>
+    </div>
+  </header>
+
+  <!-- ── 设置面板 ────────────────────────────────────────────────────── -->
+  <aside class="panel" id="panelSettings" aria-label="显示设置">
+    <div class="panel-head">
+      <h2>显示设置</h2>
+      <button type="button" class="x" data-close="panelSettings" title="关闭">✕</button>
+    </div>
+    <div class="panel-body">
+
+      <section class="group">
+        <h3>信号 <span>signal</span></h3>
+        <label class="row"><span>X 增益</span><input type="range" data-set="gainX" min="0.1" max="4" step="0.01" /><output data-out="gainX"></output></label>
+        <label class="row"><span>Y 增益</span><input type="range" data-set="gainY" min="0.1" max="4" step="0.01" /><output data-out="gainY"></output></label>
+        <label class="row"><span>X 偏移</span><input type="range" data-set="offX" min="-1" max="1" step="0.01" /><output data-out="offX"></output></label>
+        <label class="row"><span>Y 偏移</span><input type="range" data-set="offY" min="-1" max="1" step="0.01" /><output data-out="offY"></output></label>
+        <label class="row"><span>采样窗口</span><input type="range" data-set="windowIdx" min="0" max="6" step="1" /><output data-out="windowIdx"></output></label>
+        <div class="row select-row">
+          <span>引擎采样率</span>
+          <select id="rateMode" aria-label="音频引擎采样率" title="「自动」跟随音频文件的原生采样率，不重采样">
+            <option value="auto">自动（匹配音频文件）</option>
+            <option value="device">跟随设备</option>
+            <option value="44100">44.1 kHz</option>
+            <option value="48000">48 kHz</option>
+            <option value="96000">96 kHz</option>
+            <option value="192000">192 kHz</option>
+            <option value="384000">384 kHz</option>
+          </select>
+        </div>
+      </section>
+
+      <section class="group">
+        <h3>性能 <span>performance</span></h3>
+        <div class="pills">
+          <button type="button" class="pill" id="btnPerf" aria-pressed="false" title="窗口 2048 · 关网格 · 引擎跟随设备 · 75% 缩放">性能模式</button>
+        </div>
+        <div class="row select-row">
+          <span>渲染缩放</span>
+          <select id="renderScale" aria-label="渲染缩放">
+            <option value="auto">自动（按帧率自适应）</option>
+            <option value="1">100%</option>
+            <option value="0.75">75%</option>
+            <option value="0.5">50%（最省）</option>
+            <option value="1.5">150%（超采样）</option>
+            <option value="2">200%（超采样）</option>
+          </select>
+          <output data-out="renderScale"></output>
+        </div>
+      </section>
+
+      <section class="group">
+        <h3>电子束 <span>beam</span></h3>
+        <label class="row"><span>亮度</span><input type="range" data-set="intensity" min="0.1" max="2" step="0.01" /><output data-out="intensity"></output></label>
+        <label class="row"><span>线宽</span><input type="range" data-set="lineWidth" min="0.5" max="3" step="0.05" /><output data-out="lineWidth"></output></label>
+        <label class="row"><span>余辉</span><input type="range" data-set="persistence" min="0" max="100" step="1" /><output data-out="persistence"></output></label>
+        <label class="row"><span>颜色</span><input type="color" data-set="color" /><output data-out="color"></output></label>
+        <div class="swatches" id="swatches"></div>
+      </section>
+
+      <section class="group">
+        <h3>开关 <span>toggles</span></h3>
+        <div class="pills">
+          <button type="button" class="pill" data-toggle="blanking" title="亮度 ∝ 1/束速，快于平均 10 倍的回扫段直接不画">速度消隐</button>
+          <button type="button" class="pill" data-toggle="trigger" title="在 X 轴上升过零点对齐窗口，周期信号更稳">相位锁定</button>
+          <button type="button" class="pill" data-toggle="autoGain" title="按峰值自动调整整体增益，两轴同系数">自动增益</button>
+          <button type="button" class="pill" data-toggle="grid" title="显示刻度网格">网格</button>
+          <button type="button" class="pill" data-toggle="beamDot" title="在束当前位置画一个亮点">光点</button>
+        </div>
+        <button type="button" class="ghost" id="btnReset">恢复默认设置</button>
+      </section>
+
+    </div>
+  </aside>
+
+  <!-- ── 播放列表面板 ────────────────────────────────────────────────── -->
+  <aside class="panel list" id="panelList" aria-label="播放列表">
+    <div class="panel-head">
+      <h2>播放列表 <span id="listCount"></span></h2>
+      <button type="button" class="x" data-close="panelList" title="关闭">✕</button>
+    </div>
+    <ul class="tracks" id="trackList"></ul>
+    <div class="panel-foot">
+      <button type="button" class="ghost" id="btnOpen">＋ 添加本地文件…</button>
+    </div>
+  </aside>
+
+  <!-- ── 底部控制台 ──────────────────────────────────────────────────── -->
+  <footer class="dock" id="dock">
+    <div class="now">
+      <div class="now-title" id="trackTitle">未加载音频</div>
+      <div class="now-sub" id="trackSub">拖入文件，或打开播放列表</div>
+    </div>
+
+    <div class="seekwrap">
+      <span class="time" id="tCur">0:00</span>
+      <input type="range" id="seek" min="0" max="1000" step="1" value="0" aria-label="播放进度" />
+      <span class="time" id="tDur">0:00</span>
+    </div>
+
+    <div class="transport">
+      <button type="button" class="btn" id="btnPrev" title="上一首 (←)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 6h2.2v12H7zm11 0v12l-8.6-6z"/></svg>
+      </button>
+      <button type="button" class="btn play" id="btnPlay" title="播放 / 暂停 (空格)">
+        <svg class="i-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.2v13.6L19 12z"/></svg>
+        <svg class="i-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5.2h3.4v13.6H7zm6.6 0H17v13.6h-3.4z"/></svg>
+      </button>
+      <button type="button" class="btn" id="btnNext" title="下一首 (→)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.8 6H17v12h-2.2zM6 6l8.6 6L6 18z"/></svg>
+      </button>
+
+      <div class="vol" title="音量">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.2L12 5.3v13.4L7.2 14.5H4zM15 8.6a4.6 4.6 0 010 6.8l1 1a6 6 0 000-8.8z"/></svg>
+        <input type="range" id="volume" min="0" max="1" step="0.01" value="0.85" aria-label="音量" />
+      </div>
+
+      <select id="rate" aria-label="播放速度" title="播放速度">
+        <option value="0.25">0.25×</option>
+        <option value="0.5">0.5×</option>
+        <option value="0.75">0.75×</option>
+        <option value="1" selected>1×</option>
+        <option value="1.5">1.5×</option>
+        <option value="2">2×</option>
+      </select>
+
+      <button type="button" class="btn" id="btnSettings" title="显示设置 (P)">⚙</button>
+      <button type="button" class="btn" id="btnList" title="播放列表 (L)">☰</button>
+    </div>
+  </footer>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+</main>
+
+<audio id="audio" preload="metadata"></audio>
+<input type="file" id="fileInput" accept="audio/*,.wav,.flac,.mp3,.ogg,.oga,.opus,.m4a,.aac" multiple hidden />
+
+<script src="app.js"></script>
+</body>
+</html>
