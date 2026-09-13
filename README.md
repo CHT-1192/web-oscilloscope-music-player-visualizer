@@ -63,7 +63,7 @@ node build-standalone.js   # 改完 public/ 后重新生成单文件版
 | **描边型** · `oscillofun.flac` | **1024** | **16%** | 1.15 | 就是上面那张预览图 |
 | **填充型** · `primer-final.flac` | **4096** | **32%** | **2.3** | ↓ |
 
-![填充型：primer-final.flac @ 0:40](docs/preview-primer.png)
+![填充型：primer-final.flac @ 2:43 —— 棋盘格球体，整曲的核心符号](docs/preview-primer.png)
 
 ![同一首曲子 @ 1:12 —— 放射状的「穿梭」效果](docs/preview-warp.png)
 
