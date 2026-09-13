@@ -990,9 +990,9 @@ body.idle { cursor: none; }
     if (w === W && h === H && dpr === DPR) return false;
 
     DPR = dpr; W = w; H = h;
-    dom.bg.width = W; dom.bg.height = H;
-    dom.burnin.width = W; dom.burnin.height = H;   // NB: resizing clears the burn-in
-    dom.trace.width = W; dom.trace.height = H;
+    dom.bg.width = W; dom.bg.height = H;           // redrawn from scratch below
+    resizeKeeping(dom.burnin, nctx);
+    resizeKeeping(dom.trace, tctx);
 
     PLOT = Math.min(W, H) * 0.86;
     PLOT_X = (W - PLOT) / 2;
@@ -1000,9 +1000,24 @@ body.idle { cursor: none; }
     PLOT_Y = Math.max(H * 0.02, (H - PLOT) / 2 - Math.min(H * 0.035, 30 * DPR));
 
     drawBackground();
-    tctx.setTransform(1, 0, 0, 1, 0, 0);
-    tctx.clearRect(0, 0, W, H);
     return true;
+  }
+
+  /** Resize a canvas without throwing away what is already on it.
+   *  Assigning canvas.width clears the bitmap, which would silently destroy the
+   *  accumulated afterglow / burn-in on every window resize or fullscreen
+   *  toggle — and the whole point of those layers is that they persist. */
+  function resizeKeeping(canvas, ctx) {
+    const ow = canvas.width, oh = canvas.height;
+    if (!ow || !oh) { canvas.width = W; canvas.height = H; return; }
+    const off = document.createElement('canvas');
+    off.width = ow; off.height = oh;
+    off.getContext('2d').drawImage(canvas, 0, 0);
+    canvas.width = W; canvas.height = H;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.drawImage(off, 0, 0, ow, oh, 0, 0, W, H);   // rescaled to the new size
   }
 
   /** Force a fresh layout after the resolution changed. */

@@ -560,6 +560,33 @@ async function renderTests(pw) {
       `burn-in ${burnPaused.lit} vs afterglow ${tracePaused.lit}`);
   }
 
+  /* A relayout assigns canvas.width, which clears the bitmap. The accumulated
+     layers have to be carried across or a window resize silently eats them. */
+  const sigOf = (id) => page.evaluate((id) => {
+    const c = document.getElementById(id);
+    const o = document.createElement('canvas');
+    o.width = 256; o.height = 160;
+    const g = o.getContext('2d');
+    g.fillStyle = '#000'; g.fillRect(0, 0, 256, 160);
+    g.drawImage(c, 0, 0, c.width, c.height, 0, 0, 256, 160);
+    const d = g.getImageData(0, 0, 256, 160).data;
+    const out = [];
+    for (let i = 1; i < d.length; i += 4) out.push(d[i]);
+    return out;
+  }, id);
+
+  const sigBefore = await sigOf('burnin');
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.waitForTimeout(1400);
+  const sigAfter = await sigOf('burnin');
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.waitForTimeout(1400);
+  let sigSum = 0;
+  for (let i = 0; i < sigBefore.length; i++) sigSum += Math.abs(sigBefore[i] - sigAfter[i]);
+  const sigMean = sigSum / sigBefore.length;
+  if (sigMean < 4) ok('layers survive a window resize', `mean pixel delta ${sigMean.toFixed(2)} / 255`);
+  else bad('layers survive a window resize', `mean pixel delta ${sigMean.toFixed(2)} — the ghost was eaten`);
+
   await setBurn(0);
   await page.waitForTimeout(400);
   const burnCleared = await layerInk('burnin');
