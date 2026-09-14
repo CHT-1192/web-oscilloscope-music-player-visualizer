@@ -6,7 +6,7 @@
  *
  *  Zero dependencies. Pure `node:http` + `node:fs`.
  *
- *    node server.js                 # http://127.0.0.1:8080
+ *    node server.js                 # http://127.0.0.1:10240
  *    node server.js --port 3000
  *    node server.js --open          # open the browser automatically
  *    node server.js --host 0.0.0.0  # expose on the LAN
@@ -30,6 +30,18 @@ const { exec } = require('node:child_process');
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
+
+/**
+ * Default listen port.
+ *
+ * Deliberately NOT 8080: that one is claimed by half the dev servers, proxies
+ * and appliances in existence, so "the default" and "the port already in use"
+ * were the same number far too often. 10240 sits in the registered range, well
+ * clear of the 49152+ ephemeral band the OS hands out to outgoing sockets, and
+ * it happens to be 10 × 1024 — this project's signature sample window.
+ * Override with `--port <n>` or the PORT environment variable.
+ */
+const DEFAULT_PORT = 10240;
 
 /** Directories scanned for playable audio (project root + ./media if present). */
 const MEDIA_DIRS = [ROOT, path.join(ROOT, 'media')];
@@ -423,7 +435,7 @@ const server = http.createServer((req, res) => {
 /* ------------------------------------------------------------------- boot */
 
 function parseArgs(argv) {
-  const opts = { port: Number(process.env.PORT) || 8080, host: '127.0.0.1', open: false };
+  const opts = { port: Number(process.env.PORT) || DEFAULT_PORT, host: '127.0.0.1', open: false };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--port' || a === '-p') opts.port = Number(argv[++i]) || opts.port;
@@ -509,7 +521,7 @@ if (opts.help) {
   console.log(`
   Usage: node server.js [options]
 
-    -p, --port <n>   port to listen on            (default 8080)
+    -p, --port <n>   port to listen on            (default ${DEFAULT_PORT}; env PORT)
     -H, --host <ip>  interface to bind            (default 127.0.0.1)
     -o, --open       open the browser on startup
     -h, --help       show this help
