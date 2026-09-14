@@ -636,6 +636,41 @@ async function renderTests(pw) {
   await page.evaluate(() => document.getElementById('btnReset').click());
   await page.waitForTimeout(600);
 
+  /* ---- the plot must sit dead centre --------------------------------
+     A stray `grid-column: 2` on the toast conjured a second implicit grid
+     column, which squeezed the stage and shoved the plot 74px left — visible
+     to the eye but invisible to every other assertion here. */
+  const centreOffset = () => page.evaluate(() => {
+    const st = document.getElementById('stage').getBoundingClientRect();
+    const s = window.__scope.state;
+    const d = s.effectiveDpr;
+    const cx = st.left + (s.plot.x + s.plot.size / 2) / d;
+    const cy = st.top + (s.plot.y + s.plot.size / 2) / d;
+    return {
+      dx: +Math.abs(cx - innerWidth / 2).toFixed(1),
+      dy: +Math.abs(cy - (st.top + st.height / 2)).toFixed(1),
+      size: Math.round(s.plot.size / d),
+    };
+  });
+
+  const centreClosed = await centreOffset();
+  await page.evaluate(() => document.getElementById('btnSettings').click());
+  await page.waitForTimeout(500);
+  const centreOpen = await centreOffset();
+  await page.evaluate(() => document.getElementById('btnSettings').click());
+  await page.waitForTimeout(500);
+
+  if (centreClosed.dx <= 1 && centreClosed.dy <= 1) {
+    ok('plot is centred in the window', `off by ${centreClosed.dx}, ${centreClosed.dy} px`);
+  } else {
+    bad('plot is centred in the window', JSON.stringify(centreClosed));
+  }
+  if (centreOpen.dx <= 1 && centreOpen.dy <= 1) {
+    ok('opening a panel does not move the plot', `off by ${centreOpen.dx} px, size ${centreOpen.size}px`);
+  } else {
+    bad('opening a panel does not move the plot', JSON.stringify(centreOpen));
+  }
+
   await page.evaluate(() => document.querySelector('#btnList').click());
   await page.waitForTimeout(400);
   await page.screenshot({ path: path.join(SHOTS, 'playlist.png') });
