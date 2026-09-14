@@ -186,10 +186,11 @@
     resizeKeeping(dom.burnin, nctx);
     resizeKeeping(dom.trace, tctx);
 
-    PLOT = Math.min(W, H) * 0.86;
+    // The stage is whatever the chrome and any open panel left over, so the
+    // plot can simply be centred in it — nothing overlaps it any more.
+    PLOT = Math.min(W, H) * 0.9;
     PLOT_X = (W - PLOT) / 2;
-    // nudged up a little so the control dock doesn't crowd it
-    PLOT_Y = Math.max(H * 0.02, (H - PLOT) / 2 - Math.min(H * 0.035, 30 * DPR));
+    PLOT_Y = (H - PLOT) / 2;
 
     drawBackground();
     return true;
@@ -1542,8 +1543,8 @@
     const open = !p.classList.contains('open');
     p.classList.toggle('open', open);
     $(id === 'panelSettings' ? 'btnSettings' : 'btnList').classList.toggle('on', open);
-    if (id === 'panelSettings' && open) dom.panelList.classList.remove('open');
-    if (id === 'panelList' && open) dom.panelSettings.classList.remove('open');
+    // Left and right rails are independent now that they reserve their own
+    // space, so both panels can be open at once.
   }
 
   function screenshot() {

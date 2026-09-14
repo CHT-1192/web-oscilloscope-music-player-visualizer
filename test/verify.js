@@ -383,9 +383,9 @@ const SYNTH = `
   window.__plotCenter = function () {
     const c = document.getElementById('trace');
     const W = c.width, H = c.height;
-    const PLOT = Math.min(W, H) * 0.86;
+    const PLOT = Math.min(W, H) * 0.9;
     const cx = (W - PLOT) / 2 + PLOT / 2;
-    const cy = Math.max(H * 0.02, (H - PLOT) / 2 - Math.min(H * 0.035, 30)) + PLOT / 2;
+    const cy = (H - PLOT) / 2 + PLOT / 2;
     return { W, H, PLOT, cx, cy };
   };
 `;

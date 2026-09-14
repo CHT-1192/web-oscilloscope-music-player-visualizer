@@ -73,11 +73,26 @@ body.dragging::after {
   pointer-events: none;
 }
 
-#app { position: fixed; inset: 0; }
+/* The whole layout is a grid that RESERVES space: the scope column is what is
+   left after the topbar, the dock and any open panel. Nothing is ever drawn
+   underneath the UI, so panels can never cover the trace. */
+#app {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 0;
+}
+.topbar { grid-column: 2; grid-row: 1; }
+.stage { grid-column: 2; grid-row: 2; }
+.dock { grid-column: 2; grid-row: 3; }
+#panelList { grid-column: 1; grid-row: 1 / -1; }
+#panelSettings { grid-column: 3; grid-row: 1 / -1; }
 
 /* ── stage / canvases ─────────────────────────────────────────────────── */
 
-.stage { position: absolute; inset: 0; }
+.stage { position: relative; min-width: 0; min-height: 0; }
 .stage canvas {
   position: absolute;
   inset: 0;
@@ -134,16 +149,13 @@ body.dragging::after {
 /* ── top bar ──────────────────────────────────────────────────────────── */
 
 .topbar {
-  position: absolute;
-  top: 0; left: 0; right: 0;
   z-index: 20;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 14px 18px;
-  pointer-events: none;
-  transition: opacity 0.4s ease, transform 0.4s ease;
+  padding: 12px 16px 10px;
+  transition: opacity 0.4s ease;
 }
 .topbar > * { pointer-events: auto; }
 
@@ -188,17 +200,13 @@ body.dragging::after {
 /* ── dock ─────────────────────────────────────────────────────────────── */
 
 .dock {
-  position: absolute;
-  left: 50%;
-  bottom: 16px;
-  transform: translateX(-50%);
   z-index: 25;
-  width: min(1180px, calc(100% - 32px));
+  margin: 0 16px 16px;
+  padding: 13px 16px;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 12px 18px;
-  padding: 13px 16px;
   border: 1px solid var(--edge);
   border-radius: 16px;
   background: var(--panel);
@@ -208,7 +216,7 @@ body.dragging::after {
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   box-shadow: var(--shadow);
-  transition: opacity 0.4s ease, transform 0.4s ease;
+  transition: opacity 0.4s ease;
 }
 
 .now { flex: 1 1 170px; min-width: 0; }
@@ -339,29 +347,21 @@ input[type="range"]::-moz-range-thumb {
 /* ── panels ───────────────────────────────────────────────────────────── */
 
 .panel {
-  position: absolute;
-  top: 64px;
-  bottom: 104px;
   z-index: 30;
-  width: min(330px, calc(100vw - 32px));
-  display: flex;
+  width: 330px;
+  max-width: 40vw;
+  margin: 12px;
+  display: none;              /* closed rails collapse to zero width */
   flex-direction: column;
+  min-height: 0;
   border: 1px solid var(--edge);
   border-radius: var(--r);
   background: var(--panel);
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
   box-shadow: var(--shadow);
-  opacity: 0;
-  visibility: hidden;
-  transition: opacity 0.22s ease, transform 0.22s ease, visibility 0.22s;
 }
-.panel.open { opacity: 1; visibility: visible; }
-
-#panelSettings { right: 16px; transform: translateX(12px); }
-#panelSettings.open { transform: none; }
-#panelList { left: 16px; transform: translateX(-12px); }
-#panelList.open { transform: none; }
+.panel.open { display: flex; }
 
 .panel-head {
   flex: none;
@@ -590,11 +590,14 @@ input[type="range"]::-moz-range-thumb {
 
 /* ── toast ────────────────────────────────────────────────────────────── */
 
+/* Occupies the same grid cell as the topbar and is centred in it, so a status
+   message can never land on top of the trace. */
 .toast {
-  position: absolute;
-  left: 50%;
-  bottom: 118px;
-  transform: translate(-50%, 8px);
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: center;
+  align-self: center;
+  transform: translateY(8px);
   z-index: 60;
   padding: 9px 16px;
   border-radius: 999px;
@@ -606,29 +609,40 @@ input[type="range"]::-moz-range-thumb {
   visibility: hidden;
   transition: opacity 0.22s, transform 0.22s, visibility 0.22s;
   pointer-events: none;
-  max-width: calc(100vw - 40px);
+  max-width: min(60vw, 520px);
   text-align: center;
 }
-.toast.show { opacity: 1; visibility: visible; transform: translate(-50%, 0); }
+.toast.show { opacity: 1; visibility: visible; transform: none; }
 
 /* ── auto-hide chrome ─────────────────────────────────────────────────── */
 
-body.idle .topbar { opacity: 0; transform: translateY(-8px); }
-body.idle .dock { opacity: 0; transform: translateX(-50%) translateY(10px); }
+body.idle .topbar,
+body.idle .dock { opacity: 0; }
 body.idle { cursor: none; }
 
 /* ── responsive ───────────────────────────────────────────────────────── */
+
+@media (max-width: 900px) {
+  /* No room to reserve a rail, so panels overlay here — narrow screens only. */
+  #app { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto; }
+  .topbar, .stage, .dock, .toast { grid-column: 1; }
+  .panel {
+    position: absolute;
+    top: 56px; left: 0; right: 0; bottom: 0;
+    width: auto; max-width: none;
+    margin: 0;
+    border-radius: var(--r) var(--r) 0 0;
+  }
+  .panel.open { display: flex; }
+  .dock { margin: 0 10px 10px; }
+  .vol { display: none; }
+}
 
 @media (max-width: 760px) {
   .now { flex: 1 1 100%; order: -1; }
   .seekwrap { flex: 1 1 100%; }
   .transport { flex: 1 1 auto; justify-content: center; }
   .rate-badge { font-size: 9.5px; padding: 3px 7px; }
-  .panel { top: 58px; bottom: 0; border-radius: var(--r) var(--r) 0 0; width: 100%; max-width: none; }
-  #panelSettings, #panelList { left: 0; right: 0; transform: translateY(14px); }
-  #panelSettings.open, #panelList.open { transform: none; }
-  .dock { width: calc(100% - 20px); bottom: 10px; }
-  .vol { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -645,9 +659,7 @@ body.idle { cursor: none; }
     <canvas id="bg" aria-hidden="true"></canvas>
     <canvas id="burnin" aria-hidden="true"></canvas>
     <canvas id="trace" aria-label="示波器 XY 显示区"></canvas>
-  </div>
-
-  <!-- ── 空状态提示 ──────────────────────────────────────────────────── -->
+    <!-- ── 空状态提示 ──────────────────────────────────────────────────── -->
   <div class="hint" id="dropHint">
     <div class="hint-card">
       <div class="hint-mark">◉</div>
@@ -657,6 +669,11 @@ body.idle { cursor: none; }
       <p class="hint-tiny" id="hintNote"></p>
     </div>
   </div>
+  </div>
+
+
+  <!-- status toast: shares the topbar row so it never covers the scope -->
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
   <!-- ── 顶栏 ────────────────────────────────────────────────────────── -->
   <header class="topbar" id="topbar">
@@ -800,7 +817,6 @@ body.idle { cursor: none; }
     </div>
   </footer>
 
-  <div class="toast" id="toast" role="status" aria-live="polite"></div>
 </main>
 
 <audio id="audio" preload="metadata"></audio>
@@ -995,10 +1011,11 @@ body.idle { cursor: none; }
     resizeKeeping(dom.burnin, nctx);
     resizeKeeping(dom.trace, tctx);
 
-    PLOT = Math.min(W, H) * 0.86;
+    // The stage is whatever the chrome and any open panel left over, so the
+    // plot can simply be centred in it — nothing overlaps it any more.
+    PLOT = Math.min(W, H) * 0.9;
     PLOT_X = (W - PLOT) / 2;
-    // nudged up a little so the control dock doesn't crowd it
-    PLOT_Y = Math.max(H * 0.02, (H - PLOT) / 2 - Math.min(H * 0.035, 30 * DPR));
+    PLOT_Y = (H - PLOT) / 2;
 
     drawBackground();
     return true;
@@ -2351,8 +2368,8 @@ body.idle { cursor: none; }
     const open = !p.classList.contains('open');
     p.classList.toggle('open', open);
     $(id === 'panelSettings' ? 'btnSettings' : 'btnList').classList.toggle('on', open);
-    if (id === 'panelSettings' && open) dom.panelList.classList.remove('open');
-    if (id === 'panelList' && open) dom.panelSettings.classList.remove('open');
+    // Left and right rails are independent now that they reserve their own
+    // space, so both panels can be open at once.
   }
 
   function screenshot() {

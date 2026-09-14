@@ -17,9 +17,7 @@
     <canvas id="bg" aria-hidden="true"></canvas>
     <canvas id="burnin" aria-hidden="true"></canvas>
     <canvas id="trace" aria-label="示波器 XY 显示区"></canvas>
-  </div>
-
-  <!-- ── 空状态提示 ──────────────────────────────────────────────────── -->
+    <!-- ── 空状态提示 ──────────────────────────────────────────────────── -->
   <div class="hint" id="dropHint">
     <div class="hint-card">
       <div class="hint-mark">◉</div>
@@ -29,6 +27,11 @@
       <p class="hint-tiny" id="hintNote"></p>
     </div>
   </div>
+  </div>
+
+
+  <!-- status toast: shares the topbar row so it never covers the scope -->
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
   <!-- ── 顶栏 ────────────────────────────────────────────────────────── -->
   <header class="topbar" id="topbar">
@@ -172,7 +175,6 @@
     </div>
   </footer>
 
-  <div class="toast" id="toast" role="status" aria-live="polite"></div>
 </main>
 
 <audio id="audio" preload="metadata"></audio>
