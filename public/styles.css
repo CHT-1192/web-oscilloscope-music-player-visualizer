@@ -63,11 +63,15 @@ body.dragging::after {
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 0;
 }
-.topbar { grid-column: 2; grid-row: 1; }
-.stage { grid-column: 2; grid-row: 2; }
-.dock { grid-column: 2; grid-row: 3; }
-#panelList { grid-column: 1; grid-row: 1 / -1; }
-#panelSettings { grid-column: 3; grid-row: 1 / -1; }
+/* The chrome owns the top and bottom rows across the FULL width, so the stage
+   (and therefore the canvas) never changes size or position when a panel opens.
+   Panels are overlays that live in the dead margin beside the square plot; the
+   plot is what makes room for them, and only when it actually has to. */
+#app { grid-template-columns: minmax(0, 1fr); }
+.topbar { grid-column: 1; grid-row: 1; }
+.stage { grid-column: 1; grid-row: 2; }
+.dock { grid-column: 1; grid-row: 3; }
+.toast { grid-column: 1; }
 
 /* ── stage / canvases ─────────────────────────────────────────────────── */
 
@@ -326,11 +330,13 @@ input[type="range"]::-moz-range-thumb {
 /* ── panels ───────────────────────────────────────────────────────────── */
 
 .panel {
+  position: absolute;
+  top: 62px;
+  bottom: 106px;
   z-index: 30;
   width: 330px;
   max-width: 40vw;
-  margin: 12px;
-  display: none;              /* closed rails collapse to zero width */
+  display: none;
   flex-direction: column;
   min-height: 0;
   border: 1px solid var(--edge);
@@ -340,7 +346,10 @@ input[type="range"]::-moz-range-thumb {
   -webkit-backdrop-filter: blur(18px);
   box-shadow: var(--shadow);
 }
-.panel.open { display: flex; }
+.panel.open { display: flex; animation: panelIn 0.18s ease-out; }
+#panelList { left: 16px; }
+#panelSettings { right: 16px; }
+@keyframes panelIn { from { opacity: 0; } to { opacity: 1; } }
 
 .panel-head {
   flex: none;
@@ -612,7 +621,10 @@ body.idle { cursor: none; }
     margin: 0;
     border-radius: var(--r) var(--r) 0 0;
   }
-  .panel.open { display: flex; }
+  .panel.open { display: flex; animation: panelIn 0.18s ease-out; }
+#panelList { left: 16px; }
+#panelSettings { right: 16px; }
+@keyframes panelIn { from { opacity: 0; } to { opacity: 1; } }
   .dock { margin: 0 10px 10px; }
   .vol { display: none; }
 }

@@ -174,21 +174,46 @@
     return clamp(base * (Number.isFinite(mul) && mul > 0 ? mul : 1), 0.4, 3);
   }
 
+  /** How far the open side panels reach into the stage, in CSS px. The canvas
+   *  itself is never resized for a panel; only the PLOT gives up room, and only
+   *  as much as it must. On a wide window the square plot has a margin wide
+   *  enough to hide a whole panel, so nothing moves at all. */
+  function panelInset() {
+    const stage = dom.stage.getBoundingClientRect();
+    if (!stage.width) return 0;
+    const mid = (stage.left + stage.right) / 2;
+    let inset = 0;
+    for (const el of [dom.panelList, dom.panelSettings]) {
+      if (!el || !el.classList.contains('open')) continue;
+      const r = el.getBoundingClientRect();
+      // measure the intrusion from the edge the panel actually sits on
+      const onRight = (r.left + r.right) / 2 > mid;
+      inset = Math.max(inset, onRight ? stage.right - r.left : r.right - stage.left);
+    }
+    return Math.max(0, inset);
+  }
+
+  let lastInset = -1;
+
   function layout() {
     const rect = dom.stage.getBoundingClientRect();
     const dpr = effectiveDpr();
     const w = Math.max(2, Math.round((rect.width || window.innerWidth) * dpr));
     const h = Math.max(2, Math.round((rect.height || window.innerHeight) * dpr));
-    if (w === W && h === H && dpr === DPR) return false;
+    const inset = panelInset();
+    if (w === W && h === H && dpr === DPR && inset === lastInset) return false;
+    lastInset = inset;
 
     DPR = dpr; W = w; H = h;
     dom.bg.width = W; dom.bg.height = H;           // redrawn from scratch below
     resizeKeeping(dom.burnin, nctx);
     resizeKeeping(dom.trace, tctx);
 
-    // The stage is whatever the chrome and any open panel left over, so the
-    // plot can simply be centred in it — nothing overlaps it any more.
-    PLOT = Math.min(W, H) * 0.9;
+    // Stay centred in the canvas and only shrink when a panel genuinely does
+    // not fit in the margin beside the plot. Using max() rather than the sum
+    // keeps it centred, so opening one panel never shoves the plot sideways.
+    const margin = inset * dpr;
+    PLOT = Math.max(64 * dpr, Math.min(H * 0.9, (W - 2 * margin) * 0.96));
     PLOT_X = (W - PLOT) / 2;
     PLOT_Y = (H - PLOT) / 2;
 
@@ -1543,6 +1568,7 @@
     const open = !p.classList.contains('open');
     p.classList.toggle('open', open);
     $(id === 'panelSettings' ? 'btnSettings' : 'btnList').classList.toggle('on', open);
+    if (layout()) { needsRedraw = true; settle = 100; }   // the plot may need to give up margin
     // Left and right rails are independent now that they reserve their own
     // space, so both panels can be open at once.
   }
@@ -1708,6 +1734,7 @@
         effectiveDpr: effectiveDpr(),
         analyserSize,
         canvas: { w: W, h: H },
+        plot: { x: PLOT_X, y: PLOT_Y, size: PLOT },
         workMs: workAvg,
         work: {
           trimmed: workTrimmed(0.25),   // load-proof headline number
