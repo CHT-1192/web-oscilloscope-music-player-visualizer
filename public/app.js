@@ -67,6 +67,7 @@
     gainX: 1, gainY: 1, offX: 0, offY: 0,
     windowIdx: 3,
     intensity: 0.9, lineWidth: 1.15, persistence: 62, burnIn: 0, residue: 0,
+    blankRatio: 10,
     color: '#3dff9c',
     rateMode: 'auto',
     renderScale: 'auto',
@@ -1088,8 +1089,9 @@
 
     const blanking = S.blanking;
     const ref = Math.max(refSpeed > 0 ? refSpeed : PLOT * 0.01, PLOT * 0.0004);
-    const eps = PLOT * 0.0015;
-    const kB = ref * BUCKETS;
+    const eps = PLOT * 0.0015;          // only keeps ref/s finite as s -> 0
+    const blankAt = Math.max(1.05, S.blankRatio) * ref;   // explicit drop threshold
+    const topBucket = BUCKETS - 1;
 
     /* ---- ONE pass: map to pixels, track peaks, bucket the segments ------ */
     let peakL = 0, peakR = 0, total = 0;
@@ -1115,9 +1117,18 @@
         const dx = x - prevX, dy = y - prevY;
         const s = Math.sqrt(dx * dx + dy * dy);
         total += s;
-        let b = (kB / (s + eps)) | 0;
-        if (b >= BUCKETS) b = BUCKETS - 1;
-        if (b > 0) BUCKET_IDX[b * MAXN + BUCKET_N[b]++] = i - 1;
+        // Retrace blanking is an explicit comparison against the running mean
+        // speed, NOT a side effect of the bucket index. Making it explicit is
+        // what lets the threshold be a number you can state, test, and set:
+        // a segment is dropped when it is more than blankRatio times faster
+        // than the typical beam speed.
+        if (blanking && s <= blankAt) {
+          const w = ref / (s + eps);              // brightness ∝ 1/speed
+          let b = Math.ceil(w * topBucket);
+          if (b > topBucket) b = topBucket;
+          else if (b < 1) b = 1;
+          BUCKET_IDX[b * MAXN + BUCKET_N[b]++] = i - 1;
+        }
       }
       prevX = x;
       prevY = y;
@@ -1179,12 +1190,13 @@
       return;
     }
 
-    // Bucket 0 collects sweeps that are >BUCKETS× faster than the typical beam
-    // speed. Those are retrace / blanking strokes: on a CRT the beam is racing
-    // so they carry almost no charge per unit length, and under afterglow even
-    // a very dim one would still accumulate frame after frame into a visible
-    // chord. So they are dropped outright — this is what removes retrace lines
-    // for good, rather than merely fading them.
+    // Only the surviving segments reach here: anything faster than
+    // blankRatio × the mean beam speed was already dropped in the pass above.
+    // Those are retrace / blanking strokes — on a CRT the beam is racing, so
+    // they carry almost no charge per unit length, and under afterglow even a
+    // very dim one would still accumulate frame after frame into a visible
+    // chord. Dropping them outright is what removes retrace lines for good,
+    // rather than merely fading them. What is left is dimmed ∝ 1/speed.
     for (let b = 1; b < BUCKETS; b++) {
       const cnt = BUCKET_N[b];
       if (!cnt) continue;
@@ -1308,6 +1320,7 @@
     persistence: (v) => Math.round(v) + ' %',
     burnIn: (v) => (v <= 0 ? '关' : v >= 99.5 ? '永久' : Math.round(v) + ' %'),
     residue: (v) => (v <= 0 ? '关' : Math.round(v) + ' %'),
+    blankRatio: (v) => Math.round(v) + '×',
     color: (v) => String(v).toUpperCase(),
   };
 
@@ -1333,6 +1346,11 @@
     if (rm) rm.value = S.rateMode;
     const rs = $('renderScale');
     if (rs) rs.value = S.renderScale;
+    const br = document.querySelector('[data-set="blankRatio"]');
+    if (br) {
+      br.disabled = !S.blanking;
+      if (br.parentElement) br.parentElement.classList.toggle('is-off', !S.blanking);
+    }
     updateBurnIn(false);
     applyAccent(S.color);
   }
@@ -1380,6 +1398,7 @@
         btn.setAttribute('aria-pressed', String(S[key]));
         if (key === 'grid') drawBackground();
         if (key === 'trigger') refSpeed = 0;
+        if (key === 'blanking') syncControlsFromState();   // enable/disable the threshold row
         needsRedraw = true;
       });
     }

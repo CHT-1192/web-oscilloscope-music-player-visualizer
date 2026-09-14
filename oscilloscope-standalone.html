@@ -486,6 +486,10 @@ input[type="range"]::-moz-range-thumb {
 .perf-badge.is-warn { border-color: rgba(255, 196, 92, 0.5); color: #ffc45c; }
 .perf-badge[hidden] { display: none; }
 
+/* a control that has no effect right now (e.g. the blanking threshold while
+   velocity blanking is switched off) */
+.row.is-off { opacity: 0.4; }
+
 .swatches { display: flex; gap: 7px; padding: 9px 0 4px; flex-wrap: wrap; }
 .swatch {
   width: 22px; height: 22px;
@@ -762,12 +766,13 @@ body.idle { cursor: none; }
       <section class="group">
         <h3>开关 <span>toggles</span></h3>
         <div class="pills">
-          <button type="button" class="pill" data-toggle="blanking" title="亮度 ∝ 1/束速，快于平均 10 倍的回扫段直接不画">速度消隐</button>
+          <button type="button" class="pill" data-toggle="blanking" title="亮度 ∝ 1/束速，过快的回扫段直接不画">速度消隐</button>
           <button type="button" class="pill" data-toggle="trigger" title="在 X 轴上升过零点对齐窗口，周期信号更稳">相位锁定</button>
           <button type="button" class="pill" data-toggle="autoGain" title="按峰值自动调整整体增益，两轴同系数">自动增益</button>
           <button type="button" class="pill" data-toggle="grid" title="显示刻度网格">网格</button>
           <button type="button" class="pill" data-toggle="beamDot" title="在束当前位置画一个亮点">光点</button>
         </div>
+        <label class="row" title="比平均束速快多少倍以上的线段直接不画。越小越激进，越大越宽容；不同曲子的回扫速度不一样"><span>消隐阈值</span><input type="range" data-set="blankRatio" min="3" max="30" step="1" /><output data-out="blankRatio"></output></label>
         <button type="button" class="ghost" id="btnReset">恢复默认设置</button>
       </section>
 
@@ -905,6 +910,7 @@ body.idle { cursor: none; }
     gainX: 1, gainY: 1, offX: 0, offY: 0,
     windowIdx: 3,
     intensity: 0.9, lineWidth: 1.15, persistence: 62, burnIn: 0, residue: 0,
+    blankRatio: 10,
     color: '#3dff9c',
     rateMode: 'auto',
     renderScale: 'auto',
@@ -1926,8 +1932,9 @@ body.idle { cursor: none; }
 
     const blanking = S.blanking;
     const ref = Math.max(refSpeed > 0 ? refSpeed : PLOT * 0.01, PLOT * 0.0004);
-    const eps = PLOT * 0.0015;
-    const kB = ref * BUCKETS;
+    const eps = PLOT * 0.0015;          // only keeps ref/s finite as s -> 0
+    const blankAt = Math.max(1.05, S.blankRatio) * ref;   // explicit drop threshold
+    const topBucket = BUCKETS - 1;
 
     /* ---- ONE pass: map to pixels, track peaks, bucket the segments ------ */
     let peakL = 0, peakR = 0, total = 0;
@@ -1953,9 +1960,18 @@ body.idle { cursor: none; }
         const dx = x - prevX, dy = y - prevY;
         const s = Math.sqrt(dx * dx + dy * dy);
         total += s;
-        let b = (kB / (s + eps)) | 0;
-        if (b >= BUCKETS) b = BUCKETS - 1;
-        if (b > 0) BUCKET_IDX[b * MAXN + BUCKET_N[b]++] = i - 1;
+        // Retrace blanking is an explicit comparison against the running mean
+        // speed, NOT a side effect of the bucket index. Making it explicit is
+        // what lets the threshold be a number you can state, test, and set:
+        // a segment is dropped when it is more than blankRatio times faster
+        // than the typical beam speed.
+        if (blanking && s <= blankAt) {
+          const w = ref / (s + eps);              // brightness ∝ 1/speed
+          let b = Math.ceil(w * topBucket);
+          if (b > topBucket) b = topBucket;
+          else if (b < 1) b = 1;
+          BUCKET_IDX[b * MAXN + BUCKET_N[b]++] = i - 1;
+        }
       }
       prevX = x;
       prevY = y;
@@ -2017,12 +2033,13 @@ body.idle { cursor: none; }
       return;
     }
 
-    // Bucket 0 collects sweeps that are >BUCKETS× faster than the typical beam
-    // speed. Those are retrace / blanking strokes: on a CRT the beam is racing
-    // so they carry almost no charge per unit length, and under afterglow even
-    // a very dim one would still accumulate frame after frame into a visible
-    // chord. So they are dropped outright — this is what removes retrace lines
-    // for good, rather than merely fading them.
+    // Only the surviving segments reach here: anything faster than
+    // blankRatio × the mean beam speed was already dropped in the pass above.
+    // Those are retrace / blanking strokes — on a CRT the beam is racing, so
+    // they carry almost no charge per unit length, and under afterglow even a
+    // very dim one would still accumulate frame after frame into a visible
+    // chord. Dropping them outright is what removes retrace lines for good,
+    // rather than merely fading them. What is left is dimmed ∝ 1/speed.
     for (let b = 1; b < BUCKETS; b++) {
       const cnt = BUCKET_N[b];
       if (!cnt) continue;
@@ -2146,6 +2163,7 @@ body.idle { cursor: none; }
     persistence: (v) => Math.round(v) + ' %',
     burnIn: (v) => (v <= 0 ? '关' : v >= 99.5 ? '永久' : Math.round(v) + ' %'),
     residue: (v) => (v <= 0 ? '关' : Math.round(v) + ' %'),
+    blankRatio: (v) => Math.round(v) + '×',
     color: (v) => String(v).toUpperCase(),
   };
 
@@ -2171,6 +2189,11 @@ body.idle { cursor: none; }
     if (rm) rm.value = S.rateMode;
     const rs = $('renderScale');
     if (rs) rs.value = S.renderScale;
+    const br = document.querySelector('[data-set="blankRatio"]');
+    if (br) {
+      br.disabled = !S.blanking;
+      if (br.parentElement) br.parentElement.classList.toggle('is-off', !S.blanking);
+    }
     updateBurnIn(false);
     applyAccent(S.color);
   }
@@ -2218,6 +2241,7 @@ body.idle { cursor: none; }
         btn.setAttribute('aria-pressed', String(S[key]));
         if (key === 'grid') drawBackground();
         if (key === 'trigger') refSpeed = 0;
+        if (key === 'blanking') syncControlsFromState();   // enable/disable the threshold row
         needsRedraw = true;
       });
     }

@@ -107,12 +107,13 @@
       <section class="group">
         <h3>开关 <span>toggles</span></h3>
         <div class="pills">
-          <button type="button" class="pill" data-toggle="blanking" title="亮度 ∝ 1/束速，快于平均 10 倍的回扫段直接不画">速度消隐</button>
+          <button type="button" class="pill" data-toggle="blanking" title="亮度 ∝ 1/束速，过快的回扫段直接不画">速度消隐</button>
           <button type="button" class="pill" data-toggle="trigger" title="在 X 轴上升过零点对齐窗口，周期信号更稳">相位锁定</button>
           <button type="button" class="pill" data-toggle="autoGain" title="按峰值自动调整整体增益，两轴同系数">自动增益</button>
           <button type="button" class="pill" data-toggle="grid" title="显示刻度网格">网格</button>
           <button type="button" class="pill" data-toggle="beamDot" title="在束当前位置画一个亮点">光点</button>
         </div>
+        <label class="row" title="比平均束速快多少倍以上的线段直接不画。越小越激进，越大越宽容；不同曲子的回扫速度不一样"><span>消隐阈值</span><input type="range" data-set="blankRatio" min="3" max="30" step="1" /><output data-out="blankRatio"></output></label>
         <button type="button" class="ghost" id="btnReset">恢复默认设置</button>
       </section>
 

@@ -465,6 +465,10 @@ input[type="range"]::-moz-range-thumb {
 .perf-badge.is-warn { border-color: rgba(255, 196, 92, 0.5); color: #ffc45c; }
 .perf-badge[hidden] { display: none; }
 
+/* a control that has no effect right now (e.g. the blanking threshold while
+   velocity blanking is switched off) */
+.row.is-off { opacity: 0.4; }
+
 .swatches { display: flex; gap: 7px; padding: 9px 0 4px; flex-wrap: wrap; }
 .swatch {
   width: 22px; height: 22px;

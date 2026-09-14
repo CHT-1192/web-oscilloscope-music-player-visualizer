@@ -287,22 +287,24 @@ async function httpTests() {
 
 const SYNTH = `
   // A square traced slowly, then a fast diagonal retrace through its centre.
+  // __synthF = share of the period spent on the retrace. With no hold phase the
+  // retrace / mean-beam-speed ratio is exactly 1.98 / (f * 7.58): perimeter 5.6
+  // plus diagonal 1.98 units per period.
+  window.__synthF = 0.005;
   window.__synthPoint = function (t) {
-    if (t < 0.70) {                        // slow stroke: square perimeter
-      const u = t / 0.70;
+    const f = window.__synthF;
+    if (t < 1 - f) {                       // slow stroke: square perimeter
+      const u = t / (1 - f);
       const k = Math.min(3.999, u * 4);
-      const side = Math.floor(k), f = k - side;
-      const a = -0.7 + 1.4 * f;
+      const side = Math.floor(k), g = k - side;
+      const a = -0.7 + 1.4 * g;
       if (side === 0) return [a, -0.7];
       if (side === 1) return [0.7, a];
       if (side === 2) return [-a, 0.7];
       return [-0.7, -a];
     }
-    if (t < 0.705) {                       // retrace: ~20 samples across the middle
-      const u = (t - 0.70) / 0.005;
-      return [-0.7 + 1.4 * u, -0.7 + 1.4 * u];
-    }
-    return [0.7, 0.7];                     // hold at the far corner
+    const u = (t - (1 - f)) / f;           // fast diagonal retrace through the centre
+    return [-0.7 + 1.4 * u, -0.7 + 1.4 * u];
   };
 
   window.__glow = { shadowBlur: 0, shadowColor: 0, lighter: 0, filter: 0, closePathCalls: 0 };
@@ -456,6 +458,45 @@ async function renderTests(pw) {
   else bad('square stroke still rendered with blanking on', `edge alpha ${onEdge.max}`);
   if (onMid.max <= 4) ok('NO RETRACE LINE through the centre', `centre alpha ${onMid.max} (was ${offMid.max})`);
   else bad('NO RETRACE LINE through the centre', `centre alpha ${onMid.max} — retrace still visible`);
+
+  /* ---- the blanking threshold is exact, and adjustable ---------------- */
+  const centreAlpha = () => page.evaluate(() => {
+    const st = window.__scope.state;
+    const c = document.getElementById('trace');
+    const g = c.getContext('2d');
+    const x = Math.round(st.plot.x + st.plot.size / 2);
+    const y = Math.round(st.plot.y + st.plot.size / 2);
+    const d = g.getImageData(x - 5, y - 5, 11, 11).data;
+    let max = 0;
+    for (let i = 3; i < d.length; i += 4) if (d[i] > max) max = d[i];
+    return max;
+  });
+  const runAt = async (ratio, threshold) => {
+    await page.evaluate((c) => {
+      window.__synthF = 0.2612 / c.ratio;      // 1.98 / (f * 7.58)
+      const el = document.querySelector('[data-set="blankRatio"]');
+      el.value = String(c.threshold);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }, { ratio, threshold });
+    await page.waitForTimeout(1700);
+    return centreAlpha();
+  };
+
+  const thrKept = await runAt(8, 12);          // 8x, threshold 12x -> drawn
+  const thrDropped = await runAt(8, 5);        // 8x, threshold  5x -> blanked
+  if (thrKept > 12 && thrDropped === 0) {
+    ok('blanking threshold is the number the slider says',
+      `8x kept at a 12x threshold (alpha ${thrKept}), dropped at 5x`);
+  } else {
+    bad('blanking threshold is the number the slider says', `12x -> ${thrKept}, 5x -> ${thrDropped}`);
+  }
+
+  await page.evaluate(() => {
+    const el = document.querySelector('[data-set="blankRatio"]');
+    el.value = '10';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await page.waitForTimeout(400);
 
   /* ---- glow instrumentation ------------------------------------------- */
   const glow = await page.evaluate(() => window.__glow);
