@@ -7,6 +7,11 @@
 
 :root {
   --accent: #3dff9c;
+  /* Translucent accents are DERIVED from --accent, never written as a literal
+     rgba() of the default green: the theme colour is swapped at runtime, so a
+     hard-coded wash leaves the old hue behind while the outline follows. */
+  --accent-wash: color-mix(in srgb, var(--accent) 7%, transparent);
+  --accent-rule: color-mix(in srgb, var(--accent) 40%, transparent);
   --bg: #03060a;
   --panel: rgba(9, 15, 20, 0.86);
   --panel-solid: #0a1016;
@@ -124,7 +129,7 @@ body.dragging::after {
   padding: 0 2px;
   font: inherit;
   color: var(--accent);
-  border-bottom: 1px solid rgba(61, 255, 156, 0.4);
+  border-bottom: 1px solid var(--accent-rule);
   cursor: pointer;
 }
 .link:hover { border-bottom-color: var(--accent); }
@@ -497,7 +502,7 @@ input[type="range"]::-moz-range-thumb {
 .pill[aria-pressed="true"] {
   border-color: var(--accent);
   color: var(--accent);
-  background: rgba(61, 255, 156, 0.07);
+  background: var(--accent-wash);
 }
 
 .ghost {
@@ -536,7 +541,7 @@ input[type="range"]::-moz-range-thumb {
   transition: background 0.14s, border-color 0.14s;
 }
 .track:hover { background: rgba(255, 255, 255, 0.045); }
-.track.active { border-color: var(--accent); background: rgba(61, 255, 156, 0.07); }
+.track.active { border-color: var(--accent); background: var(--accent-wash); }
 .track .n {
   grid-area: n;
   font-family: var(--mono);

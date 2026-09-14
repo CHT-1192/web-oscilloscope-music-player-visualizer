@@ -33,7 +33,7 @@
 ```bash
 node server.js --open      # 打开 http://127.0.0.1:10240
 node server.js -p 8080     # 换端口（被占用会自动 +1 重试；也可用环境变量 PORT）
-node test/verify.js        # 68 项端到端验证
+node test/verify.js        # 71 项端到端验证
 node test/bench.js         # 性能基准
 node build-standalone.js   # 改完 public/ 后重新生成单文件版
 ```
@@ -128,7 +128,7 @@ public/index.html  styles.css
 build-standalone.js             生成单文件版
 oscilloscope-standalone.html    单文件版（生成物，但要提交）
 docs/                           预览图
-test/verify.js                  68 项端到端验证
+test/verify.js                  71 项端到端验证
 test/bench.js                   性能基准
 LICENSE                         Apache License 2.0（取自 apache.org 原文，仅填入版权行）
 ```
