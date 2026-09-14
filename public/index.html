@@ -96,6 +96,7 @@
         <label class="row"><span>线宽</span><input type="range" data-set="lineWidth" min="0.5" max="3" step="0.05" /><output data-out="lineWidth"></output></label>
         <label class="row"><span>余辉</span><input type="range" data-set="persistence" min="0" max="100" step="1" /><output data-out="persistence"></output></label>
         <label class="row" title="束流曝光的累积残影，衰减比余辉慢得多。0 = 关，100% = 永久烧屏；拖回 0 可清除"><span>烧屏</span><input type="range" data-set="burnIn" min="0" max="100" step="1" /><output data-out="burnIn"></output></label>
+        <label class="row" title="余辉衰减撞上 8 位量化地板后留下的永久痕迹。余辉越高地板越高，所以「余辉拉高」会留下更亮的残影。0 = 关（定期彻底擦除），越大残留越明显"><span>残留</span><input type="range" data-set="residue" min="0" max="100" step="1" /><output data-out="residue"></output></label>
         <label class="row"><span>颜色</span><input type="color" data-set="color" /><output data-out="color"></output></label>
         <div class="swatches" id="swatches"></div>
       </section>

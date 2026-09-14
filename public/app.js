@@ -66,7 +66,7 @@
   const DEFAULTS = {
     gainX: 1, gainY: 1, offX: 0, offY: 0,
     windowIdx: 3,
-    intensity: 0.9, lineWidth: 1.15, persistence: 62, burnIn: 0,
+    intensity: 0.9, lineWidth: 1.15, persistence: 62, burnIn: 0, residue: 0,
     color: '#3dff9c',
     rateMode: 'auto',
     renderScale: 'auto',
@@ -853,6 +853,7 @@
     renderPlaylist();
     refSpeed = 0;
     agGain = 1;
+    scrubTick = 0;
     monoCounter = 0;
     needsRedraw = true;
 
@@ -939,6 +940,26 @@
     ctx.globalCompositeOperation = 'source-over';
   }
 
+  /* ---- the 8-bit quantisation floor (the "residue" slider) --------------
+   * destination-out multiplies alpha: n <- n*(1-a). With round-to-nearest
+   * 8-bit storage, every n <= 1/(2a) is a FIXED POINT and never decays. So a
+   * slow fade (high 余辉) does not leave a longer ghost, it leaves a BRIGHTER
+   * one — at 100% the floor is alpha ~15, clearly visible, and the whole region
+   * the beam has ever swept keeps it forever.
+   *
+   * A periodic strong scrub is the only way out: a step of 1.0 clears the floor
+   * completely, and anything weaker leaves a predictable amount of it behind.
+   * Hence one slider, expressed as the residue you are willing to keep.
+   */
+  const SCRUB_EVERY = 180;   // frames (~3 s, longer than any visible trail)
+  let scrubTick = 0;
+
+  function scrubAlpha() {
+    const r = clamp(S.residue / 100, 0, 1);
+    if (r <= 0) return 1;                     // off -> wipe the floor completely
+    return Math.min(1, 3.125 / (r * 100));    // leaves a floor of roughly 16*r
+  }
+
   /* ---- burn-in ---------------------------------------------------------- */
   /* A second accumulation layer that decays far more slowly than the afterglow:
      it models phosphor *damage* rather than phosphor decay. Exposure is the
@@ -951,7 +972,7 @@
      would never accumulate at all, so each painting uses a healthy alpha and
      paintings are simply spaced out.
      0 % = off, 100 % = permanent (never decays). */
-  const burn = { on: false, gain: 0.03, rate: 0, decay: 0, budget: 0, fadeTick: 0 };
+  const burn = { on: false, gain: 0.03, rate: 0, decay: 0, fadeStep: 0.25, fadeEvery: 0, budget: 0, fadeTick: 0 };
 
   function clearBurnIn() {
     if (!W || !H) return;
@@ -972,6 +993,10 @@
     // Steady state for a pixel the beam keeps returning to is roughly
     // rate*gain/decay, so decay is what decides how strong the ghost gets.
     burn.decay = b >= 0.99 ? 0 : 0.0012 * Math.pow(1 - b, 2);
+    // Step big enough to clear the floor, then spread the steps out to keep the
+    // requested average rate.
+    burn.fadeStep = 0.25;
+    burn.fadeEvery = burn.decay > 0 ? Math.max(1, Math.round(burn.fadeStep / burn.decay)) : 0;
     burn.budget = 0;
     burn.fadeTick = 0;
     if (force || (was && !burn.on)) clearBurnIn();   // turning it off wipes the ghost
@@ -1183,7 +1208,11 @@
       // flat. Never re-read them here — keep painting the last captured window
       // instead, otherwise pausing (or nudging a slider while paused) would
       // blank the screen.
-      if (wasLive) { wasLive = false; settle = 100; }   // just paused: let the afterglow settle
+      if (wasLive) {
+        wasLive = false;
+        settle = 100;                                   // just paused: let the afterglow settle
+        if (S.residue <= 0) scrubTick = SCRUB_EVERY;    // and wipe the floor before it freezes
+      }
       if (needsRedraw) settle = 100;                    // settings changed: re-settle
       if (!haveSignal || settle <= 0) { needsRedraw = false; return; }
       settle--;
@@ -1193,13 +1222,18 @@
     const workStart = performance.now();
     // Afterglow is pure subtraction: destination-out only ever removes alpha,
     // so a bright pixel can never bleed light into its neighbours.
-    fadeLayer(tctx, fadeAlpha());
-    // The burn-in layer decays ~100x more slowly than the afterglow, so its
-    // fade is batched into one pass every 4th frame with 4x the alpha — the
-    // curve is identical and it keeps the layer essentially free.
-    if (burn.on && burn.decay > 0 && ++burn.fadeTick >= 4) {
+    if (++scrubTick >= SCRUB_EVERY) {
+      scrubTick = 0;
+      fadeLayer(tctx, scrubAlpha());
+    } else {
+      fadeLayer(tctx, fadeAlpha());
+    }
+    // The burn-in decays far more slowly than the afterglow, so its fade runs
+    // in chunky steps. A small per-frame step would sit below the quantisation
+    // floor and the ghost would never decay at all.
+    if (burn.on && burn.fadeEvery > 0 && ++burn.fadeTick >= burn.fadeEvery) {
       burn.fadeTick = 0;
-      fadeLayer(nctx, Math.min(1, burn.decay * 4));
+      fadeLayer(nctx, burn.fadeStep);
     }
 
     try {
@@ -1247,6 +1281,7 @@
     lineWidth: (v) => Number(v).toFixed(2) + ' px',
     persistence: (v) => Math.round(v) + ' %',
     burnIn: (v) => (v <= 0 ? '关' : v >= 99.5 ? '永久' : Math.round(v) + ' %'),
+    residue: (v) => (v <= 0 ? '关' : Math.round(v) + ' %'),
     color: (v) => String(v).toUpperCase(),
   };
 
@@ -1451,6 +1486,7 @@
     qualityCooldown = 120;
     refSpeed = 0;
     agGain = 1;
+    scrubTick = 0;
     monoCounter = 0;
     monoLike = false;
     lastPeakL = 0;

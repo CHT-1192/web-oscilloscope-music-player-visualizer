@@ -593,6 +593,49 @@ async function renderTests(pw) {
   if (burnCleared.lit === 0) ok('turning burn-in off wipes the ghost');
   else bad('turning burn-in off wipes the ghost', `${burnCleared.lit} px`);
 
+  /* ---- residue: the 8-bit quantisation floor --------------------------- */
+  /* destination-out multiplies alpha, so with round-to-nearest every value
+     n <= 1/(2a) is a fixed point. A slow fade (high 余辉) therefore leaves a
+     BRIGHTER permanent ghost, not a longer one. The 残留 slider scrubs it. */
+  const ghostBand = () => page.evaluate(() => {
+    const c = document.getElementById('trace');
+    const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+    let n = 0;
+    for (let i = 3; i < d.length; i += 4) if (d[i] > 8 && d[i] <= 64) n++;
+    return +((n * 100) / (c.width * c.height)).toFixed(3);
+  });
+  const setNum = (k, v) => page.evaluate((c) => {
+    const el = document.querySelector(`[data-set="${c.k}"]`);
+    el.value = String(c.v);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  }, { k, v });
+
+  const ghostAfterRun = async (residue) => {
+    await setNum('persistence', 100);
+    await setNum('residue', residue);
+    await page.evaluate(() => {
+      const a = document.getElementById('audio');
+      a.currentTime = 60;
+      if (a.paused) document.getElementById('btnPlay').click();
+    });
+    await page.waitForTimeout(9000);
+    await page.evaluate(() => document.getElementById('audio').pause());
+    await page.waitForTimeout(5000);
+    return ghostBand();
+  };
+
+  const ghostOn = await ghostAfterRun(100);
+  const ghostOff = await ghostAfterRun(0);
+  if (ghostOn > 5) ok('residue 100% leaves a permanent ghost', `${ghostOn}% of the canvas at alpha 9-64`);
+  else bad('residue 100% leaves a permanent ghost', `${ghostOn}%`);
+  if (ghostOff < ghostOn / 10) {
+    ok('residue off (default) wipes the quantisation floor', `${ghostOff}% vs ${ghostOn}%`);
+  } else {
+    bad('residue off (default) wipes the quantisation floor', `${ghostOff}% vs ${ghostOn}%`);
+  }
+  await page.evaluate(() => document.getElementById('btnReset').click());
+  await page.waitForTimeout(600);
+
   await page.evaluate(() => document.querySelector('#btnList').click());
   await page.waitForTimeout(400);
   await page.screenshot({ path: path.join(SHOTS, 'playlist.png') });
