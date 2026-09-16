@@ -1090,7 +1090,7 @@
     const blanking = S.blanking;
     const ref = Math.max(refSpeed > 0 ? refSpeed : PLOT * 0.01, PLOT * 0.0004);
     const eps = PLOT * 0.0015;          // only keeps ref/s finite as s -> 0
-    const blankAt = Math.max(1.05, S.blankRatio) * ref;   // explicit drop threshold
+    const blankAt = S.blankRatio * ref;   // explicit drop threshold, no hidden clamp
     const topBucket = BUCKETS - 1;
 
     /* ---- ONE pass: map to pixels, track peaks, bucket the segments ------ */
@@ -1320,7 +1320,7 @@
     persistence: (v) => Math.round(v) + ' %',
     burnIn: (v) => (v <= 0 ? '关' : v >= 99.5 ? '永久' : Math.round(v) + ' %'),
     residue: (v) => (v <= 0 ? '关' : Math.round(v) + ' %'),
-    blankRatio: (v) => Math.round(v) + '×',
+    blankRatio: (v) => (Number.isInteger(v) ? String(v) : v.toFixed(1)) + '×',
     color: (v) => String(v).toUpperCase(),
   };
 

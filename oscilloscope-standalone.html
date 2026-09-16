@@ -777,7 +777,7 @@ body.idle { cursor: none; }
           <button type="button" class="pill" data-toggle="grid" title="显示刻度网格">网格</button>
           <button type="button" class="pill" data-toggle="beamDot" title="在束当前位置画一个亮点">光点</button>
         </div>
-        <label class="row" title="比平均束速快多少倍以上的线段直接不画。越小越激进，越大越宽容；不同曲子的回扫速度不一样"><span>消隐阈值</span><input type="range" data-set="blankRatio" min="3" max="30" step="1" /><output data-out="blankRatio"></output></label>
+        <label class="row" title="比平均束速快多少倍以上的线段直接不画。1× 最激进，15× 以上基本等于不消隐；不同曲子的回扫速度不一样"><span>消隐阈值</span><input type="range" data-set="blankRatio" min="1" max="15" step="0.5" /><output data-out="blankRatio"></output></label>
         <button type="button" class="ghost" id="btnReset">恢复默认设置</button>
       </section>
 
@@ -1938,7 +1938,7 @@ body.idle { cursor: none; }
     const blanking = S.blanking;
     const ref = Math.max(refSpeed > 0 ? refSpeed : PLOT * 0.01, PLOT * 0.0004);
     const eps = PLOT * 0.0015;          // only keeps ref/s finite as s -> 0
-    const blankAt = Math.max(1.05, S.blankRatio) * ref;   // explicit drop threshold
+    const blankAt = S.blankRatio * ref;   // explicit drop threshold, no hidden clamp
     const topBucket = BUCKETS - 1;
 
     /* ---- ONE pass: map to pixels, track peaks, bucket the segments ------ */
@@ -2168,7 +2168,7 @@ body.idle { cursor: none; }
     persistence: (v) => Math.round(v) + ' %',
     burnIn: (v) => (v <= 0 ? '关' : v >= 99.5 ? '永久' : Math.round(v) + ' %'),
     residue: (v) => (v <= 0 ? '关' : Math.round(v) + ' %'),
-    blankRatio: (v) => Math.round(v) + '×',
+    blankRatio: (v) => (Number.isInteger(v) ? String(v) : v.toFixed(1)) + '×',
     color: (v) => String(v).toUpperCase(),
   };
 

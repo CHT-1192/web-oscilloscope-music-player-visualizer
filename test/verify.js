@@ -577,6 +577,46 @@ async function renderTests(pw) {
     bad('blanking threshold is the number the slider says', `12x -> ${thrKept}, 5x -> ${thrDropped}`);
   }
 
+  /* The useful range is bounded by where the material's segment speeds live:
+     they cluster (slow stroke, fast retrace) with a gap in between, so past the
+     top of the gap the slider does nothing at all. Hence 1x-15x, not 1x-30x. */
+  const thrEdge = await runAt(12, 15);         // 12x, threshold 15x -> drawn
+  if (thrEdge > 12) ok('15x is wide enough to readmit a 12x retrace', `alpha ${thrEdge}`);
+  else bad('15x is wide enough to readmit a 12x retrace', `alpha ${thrEdge}`);
+
+  const slider = await page.evaluate(() => {
+    const el = document.querySelector('[data-set="blankRatio"]');
+    const out = document.querySelector('[data-out="blankRatio"]');
+    const read = (v) => {
+      el.value = String(v);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      return out.textContent;
+    };
+    const labels = [1, 7.5, 10, 15].map(read);
+    el.value = '10';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    return { min: el.min, max: el.max, step: el.step, labels };
+  });
+  if (slider.min === '1' && slider.max === '15' && slider.step === '0.5') {
+    ok('blanking slider spans 1x-15x in half steps', `${slider.min}-${slider.max} step ${slider.step}, labels ${slider.labels.join(' ')}`);
+  } else {
+    bad('blanking slider spans 1x-15x in half steps', JSON.stringify(slider));
+  }
+  if (slider.labels[1] === '7.5×' && slider.labels[3] === '15×') {
+    ok('fractional thresholds keep their half', slider.labels.join(' '));
+  } else {
+    bad('fractional thresholds keep their half', slider.labels.join(' '));
+  }
+
+  /* The bottom of the range is aggressive (half the segments can go) but must
+     never erase the picture: at 1x the slow stroke is all that is left. */
+  await runAt(8, 1);
+  const edgeAtOne = await page.evaluate(
+    (c) => window.__measure(c.cx + c.PLOT * 0.35, c.cy, 6, c.PLOT * 0.2).max, center);
+  if (edgeAtOne > 40) ok('1x is aggressive but does not wipe the stroke', `edge alpha ${edgeAtOne}`);
+  else bad('1x is aggressive but does not wipe the stroke', `edge alpha ${edgeAtOne}`);
+  await runAt(8, 12);
+
   await page.evaluate(() => {
     const el = document.querySelector('[data-set="blankRatio"]');
     el.value = '10';
