@@ -1,11 +1,11 @@
 /* ============================================================================
- *  core.js — the leaves: shorthands, the settings object, DOM refs, toast
- *
- *  Nothing here depends on anything else in the app, which is what lets every
- *  other module import it without a cycle. `S` and `dom` are exported as
- *  objects on purpose: callers mutate their fields, and a shared object
- *  reference survives being imported, while a re-exported primitive would not.
- * ========================================================================== */
+    core.js — the leaves: shorthands, the settings object, DOM refs, toast
+
+    Nothing here depends on anything else in the app, which is what lets every
+    other module import it without a cycle. `S` and `dom` are exported as
+    objects on purpose: callers mutate their fields, and a shared object
+    reference survives being imported, while a re-exported primitive would not.
+   ========================================================================== */
 
 /* ------------------------------------------------------------------ utils */
 
@@ -68,13 +68,13 @@ const S = Object.assign({}, DEFAULTS);
 const winSize = () => WINDOW_CHOICES[clamp(S.windowIdx | 0, 0, WINDOW_CHOICES.length - 1)];
 
 /** Flags any module may set and only the render loop clears.
- *  They live here, not in render.js, because the audio graph, the settings
- *  bridge and the UI all invalidate the picture — and audio.js must not depend
- *  on render.js (render depends on audio for the samples). */
+    They live here, not in render.js, because the audio graph, the settings
+    bridge and the UI all invalidate the picture — and audio.js must not depend
+    on render.js (render depends on audio for the samples). */
 const flags = { redraw: true, settle: 0 };
 
 /** The keys a preset carries. rateMode and renderScale describe the machine you
- *  happen to be on, so a preset must not carry them to someone else's laptop. */
+    happen to be on, so a preset must not carry them to someone else's laptop. */
 const PRESET_KEYS = Object.keys(DEFAULTS).filter((k) => k !== 'rateMode' && k !== 'renderScale');
 
 const FORMATTERS = {

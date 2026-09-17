@@ -39,19 +39,19 @@ let qualityCooldown = 0;
 let workStatCountdown = 30;
 
 /* Rolling window of per-frame render times.
- *
- *  performance.now() is quantised to 100 us in Chrome, which is coarser than
- *  the differences worth measuring, so no single sample is useful. Two
- *  properties make the window work anyway:
- *    - averaging many quantised samples recovers sub-quantum resolution;
- *    - background load (another app, a compile) can only ever ADD slow
- *      frames, so it shows up purely as a right tail.
- *  So `trimmed()` — the mean of the fastest quarter — is both sub-quantum
- *  accurate and insensitive to whatever else the machine is doing.
- *
- *  Keep the window SHORT (~2 s): a long one both slows the quality
- *  adaptation down and, when a measurement starts, is still full of stale
- *  frames from before the change. */
+
+    performance.now() is quantised to 100 us in Chrome, which is coarser than
+    the differences worth measuring, so no single sample is useful. Two
+    properties make the window work anyway:
+      - averaging many quantised samples recovers sub-quantum resolution;
+      - background load (another app, a compile) can only ever ADD slow
+        frames, so it shows up purely as a right tail.
+    So `trimmed()` — the mean of the fastest quarter — is both sub-quantum
+    accurate and insensitive to whatever else the machine is doing.
+
+    Keep the window SHORT (~2 s): a long one both slows the quality
+    adaptation down and, when a measurement starts, is still full of stale
+    frames from before the change. */
 const WORK_RING = new Float32Array(120);
 const WORK_SORT = new Float32Array(120);
 let workPos = 0;
@@ -100,9 +100,9 @@ function effectiveDpr() {
 }
 
 /** How far the open side panels reach into the stage, in CSS px. The canvas
- *  itself is never resized for a panel; only the PLOT gives up room, and only
- *  as much as it must. On a wide window the square plot has a margin wide
- *  enough to hide a whole panel, so nothing moves at all. */
+    itself is never resized for a panel; only the PLOT gives up room, and only
+    as much as it must. On a wide window the square plot has a margin wide
+    enough to hide a whole panel, so nothing moves at all. */
 function panelInset() {
   const stage = dom.stage.getBoundingClientRect();
   if (!stage.width) return 0;
@@ -147,9 +147,9 @@ function layout() {
 }
 
 /** Resize a canvas without throwing away what is already on it.
- *  Assigning canvas.width clears the bitmap, which would silently destroy the
- *  accumulated afterglow / burn-in on every window resize or fullscreen
- *  toggle — and the whole point of those layers is that they persist. */
+    Assigning canvas.width clears the bitmap, which would silently destroy the
+    accumulated afterglow / burn-in on every window resize or fullscreen
+    toggle — and the whole point of those layers is that they persist. */
 function resizeKeeping(canvas, ctx) {
   const ow = canvas.width, oh = canvas.height;
   if (!ow || !oh) { canvas.width = W; canvas.height = H; return; }
@@ -187,12 +187,12 @@ function updatePerfBadge() {
 }
 
 /** Shrink the render target when a frame costs too much, grow it back when
- *  there is headroom.
- *
- *  Driven by the MEDIAN of a rolling window rather than a mean: a single
- *  slow frame (GC pause, another app on the machine, a compile in the
- *  background) should not trigger a resolution drop, and the median is what
- *  a mean cannot give us. */
+    there is headroom.
+
+    Driven by the MEDIAN of a rolling window rather than a mean: a single
+    slow frame (GC pause, another app on the machine, a compile in the
+    background) should not trigger a resolution drop, and the median is what
+    a mean cannot give us. */
 function adaptQuality(workMs) {
   recordWork(workMs);
   workAvg += (workMs - workAvg) * 0.08;
@@ -345,16 +345,16 @@ function fadeLayer(ctx, alpha) {
 }
 
 /* ---- the 8-bit quantisation floor (the "residue" slider) --------------
- * destination-out multiplies alpha: n <- n*(1-a). With round-to-nearest
- * 8-bit storage, every n <= 1/(2a) is a FIXED POINT and never decays. So a
- * slow fade (high 余辉) does not leave a longer ghost, it leaves a BRIGHTER
- * one — at 100% the floor is alpha ~15, clearly visible, and the whole region
- * the beam has ever swept keeps it forever.
- *
- * A periodic strong scrub is the only way out: a step of 1.0 clears the floor
- * completely, and anything weaker leaves a predictable amount of it behind.
- * Hence one slider, expressed as the residue you are willing to keep.
- */
+   destination-out multiplies alpha: n <- n*(1-a). With round-to-nearest
+   8-bit storage, every n <= 1/(2a) is a FIXED POINT and never decays. So a
+   slow fade (high 余辉) does not leave a longer ghost, it leaves a BRIGHTER
+   one — at 100% the floor is alpha ~15, clearly visible, and the whole region
+   the beam has ever swept keeps it forever.
+
+   A periodic strong scrub is the only way out: a step of 1.0 clears the floor
+   completely, and anything weaker leaves a predictable amount of it behind.
+   Hence one slider, expressed as the residue you are willing to keep.
+*/
 const SCRUB_EVERY = 180;   // frames (~3 s, longer than any visible trail)
 let scrubTick = 0;
 
@@ -531,7 +531,7 @@ function drawTrace(L, R, capacity, n, live) {
 }
 
 /** Stroke the already-computed beam path into `ctx` with `base` as the peak
- *  alpha. Shared by the afterglow layer and the burn-in layer. */
+    alpha. Shared by the afterglow layer and the burn-in layer. */
 function paintInto(ctx, n, base) {
   ctx.lineWidth = S.lineWidth * DPR;
   ctx.lineJoin = 'round';
@@ -581,7 +581,7 @@ let uiTick = 0;
    keeps painting this instead of re-reading them. */
 let frame = null;
 /** The transport readout lives in ui.js. The loop must not import the UI, so
- *  the consumer registers itself here instead — one line, one direction. */
+    the consumer registers itself here instead — one line, one direction. */
 let tick = null;
 function setTickHandler(fn) { tick = fn; }
 
@@ -647,7 +647,7 @@ function loop(ts) {
 /* ------------------------------------------------- what the rest of the app uses */
 
 /** A track change, a preset or a reset: forget everything the previous picture
- *  taught the beam. `settle` asks the afterglow to rebuild from scratch. */
+    taught the beam. `settle` asks the afterglow to rebuild from scratch. */
 function resetTraceState({ settle = false } = {}) {
   refSpeed = 0;
   agGain = 1;
@@ -669,7 +669,7 @@ function resetQuality() { autoScale = 1; workAvg = 0; qualityCooldown = 120; }
 function resettle() { flags.settle = 100; flags.redraw = true; }
 
 /** Background + beam, for the save-PNG button. The ghost layer is deliberately
- *  not composited: it is a screen artefact, not part of the picture. */
+    not composited: it is a screen artefact, not part of the picture. */
 function composite() {
   if (!W || !H) return null;
   const c = document.createElement('canvas');

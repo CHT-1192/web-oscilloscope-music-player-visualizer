@@ -2,24 +2,24 @@
 'use strict';
 
 /* ============================================================================
- *  Web Oscilloscope Music Player / Visualizer  —  Node.js server
- *
- *  Zero dependencies. Pure `node:http` + `node:fs`.
- *
- *    node server.js                 # http://127.0.0.1:10240
- *    node server.js --port 3000
- *    node server.js --open          # open the browser automatically
- *    node server.js --host 0.0.0.0  # expose on the LAN
- *
- *  Routes
- *    GET /                 -> public/index.html  (the app)
- *    GET /standalone       -> oscilloscope-standalone.html (single-file build)
- *    GET /api/tracks       -> JSON playlist of audio files found in the project
- *    GET|HEAD /media/<name> -> audio stream with HTTP Range support (seeking)
- *
- *  Range support matters here: the bundled FLAC is 283 MB, so the browser must
- *  be able to seek without downloading the whole thing.
- * ========================================================================== */
+    Web Oscilloscope Music Player / Visualizer  —  Node.js server
+
+    Zero dependencies. Pure `node:http` + `node:fs`.
+
+      node server.js                 # http://127.0.0.1:10240
+      node server.js --port 3000
+      node server.js --open          # open the browser automatically
+      node server.js --host 0.0.0.0  # expose on the LAN
+
+    Routes
+      GET /                 -> public/index.html  (the app)
+      GET /standalone       -> oscilloscope-standalone.html (single-file build)
+      GET /api/tracks       -> JSON playlist of audio files found in the project
+      GET|HEAD /media/<name> -> audio stream with HTTP Range support (seeking)
+
+    Range support matters here: the bundled FLAC is 283 MB, so the browser must
+    be able to seek without downloading the whole thing.
+   ========================================================================== */
 
 const http = require('node:http');
 const fs = require('node:fs');
@@ -32,15 +32,15 @@ const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
 
 /**
- * Default listen port.
- *
- * Deliberately NOT 8080: that one is claimed by half the dev servers, proxies
- * and appliances in existence, so "the default" and "the port already in use"
- * were the same number far too often. 10240 sits in the registered range, well
- * clear of the 49152+ ephemeral band the OS hands out to outgoing sockets, and
- * it happens to be 10 × 1024 — this project's signature sample window.
- * Override with `--port <n>` or the PORT environment variable.
- */
+   Default listen port.
+
+   Deliberately NOT 8080: that one is claimed by half the dev servers, proxies
+   and appliances in existence, so "the default" and "the port already in use"
+   were the same number far too often. 10240 sits in the registered range, well
+   clear of the 49152+ ephemeral band the OS hands out to outgoing sockets, and
+   it happens to be 10 × 1024 — this project's signature sample window.
+   Override with `--port <n>` or the PORT environment variable.
+*/
 const DEFAULT_PORT = 10240;
 
 /** Directories scanned for playable audio (project root + ./media if present). */

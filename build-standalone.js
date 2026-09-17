@@ -2,32 +2,32 @@
 'use strict';
 
 /* ============================================================================
- *  build-standalone.js
- *
- *  Inlines public/styles.css and the ES modules under public/js/ into a single,
- *  fully self-contained HTML file:  oscilloscope-standalone.html
- *
- *  Why not just use a bundler? Because this project ships zero dependencies on
- *  purpose ("no npm install"), and the module syntax used here is deliberately
- *  small enough that inlining it is ~60 lines instead of a dependency.
- *
- *  The dialect, enforced below (anything else is a hard error, never a guess):
- *
- *    import * as ns from './other.js';   the ONLY import form
- *    export function f() {}              export const x = 1;
- *    export { a, b };                    no export let/var, no default, no
- *                                        export *, no dynamic import()
- *
- *  `export let` is rejected on purpose: inlined modules share no scope, but a
- *  re-exported *binding* would still be snapshotted at definition time, so a
- *  mutable scalar exported that way would silently stop updating. Mutable
- *  state must live in an exported object (or behind a getter) instead.
- *
- *  Import cycles are rejected too — the DAG check keeps the whole thing
- *  acyclic, which is the property that makes evaluation order irrelevant.
- *
- *    node build-standalone.js
- * ========================================================================== */
+    build-standalone.js
+
+    Inlines public/styles.css and the ES modules under public/js/ into a single,
+    fully self-contained HTML file:  oscilloscope-standalone.html
+
+    Why not just use a bundler? Because this project ships zero dependencies on
+    purpose ("no npm install"), and the module syntax used here is deliberately
+    small enough that inlining it is ~60 lines instead of a dependency.
+
+    The dialect, enforced below (anything else is a hard error, never a guess):
+
+      import * as ns from './other.js';   the ONLY import form
+      export function f() {}              export const x = 1;
+      export { a, b };                    no export let/var, no default, no
+                                          export *, no dynamic import()
+
+    `export let` is rejected on purpose: inlined modules share no scope, but a
+    re-exported *binding* would still be snapshotted at definition time, so a
+    mutable scalar exported that way would silently stop updating. Mutable
+    state must live in an exported object (or behind a getter) instead.
+
+    Import cycles are rejected too — the DAG check keeps the whole thing
+    acyclic, which is the property that makes evaluation order irrelevant.
+
+      node build-standalone.js
+   ========================================================================== */
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -56,8 +56,8 @@ function resolveId(fromId, spec) {
 }
 
 /** Parse the names out of an `export { ... }` list (which may span lines),
- *  rejecting anything that is not a plain local name — `export { a as b }` and
- *  friends would need real module machinery to mean what they say. */
+    rejecting anything that is not a plain local name — `export { a as b }` and
+    friends would need real module machinery to mean what they say. */
 function exportNames(list, id, where) {
   return list
     .replace(/\/\/[^\n]*/g, '')          // line comments inside the list
@@ -142,8 +142,8 @@ function loadModule(id, seen) {
 }
 
 /** Every `const { a, b } = ns;` an author writes must name something the target
- *  module actually exports. Real ESM fails this at link time; an inliner would
- *  quietly bind `undefined` and fail later, somewhere else. */
+    module actually exports. Real ESM fails this at link time; an inliner would
+    quietly bind `undefined` and fail later, somewhere else. */
 function validateAliases(mod) {
   const nsToId = new Map(mod.imports.map((i) => [i.ns, i.target]));
   const re = /const \{\n([\s\S]*?)\n\} = ([A-Za-z_$][\w$]*);/g;

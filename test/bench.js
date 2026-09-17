@@ -2,25 +2,25 @@
 'use strict';
 
 /* ============================================================================
- *  test/bench.js — where does the time actually go?
- *
- *  Three complementary numbers, because each one alone is misleading:
- *
- *    main%   CDP Performance.getMetrics TaskDuration — the renderer main thread.
- *            This is where the JS and canvas work lands.
- *    total%  Cumulative CPU of the WHOLE browser process tree (ps -o time).
- *            This catches the audio decode / resample threads, the GPU process
- *            and compositing — everything the main-thread metric misses. It is
- *            the number that predicts whether a slow machine copes.
- *    work ms The app's own measured render-loop time (fade + trace), which is
- *            far less noisy than any process-level sampling.
- *
- *  Every config is sandwiched between two baseline measurements inside ONE
- *  browser session: launching a fresh browser per config added more noise than
- *  most of the effects being measured.
- *
- *    node test/bench.js
- * ========================================================================== */
+    test/bench.js — where does the time actually go?
+
+    Three complementary numbers, because each one alone is misleading:
+
+      main%   CDP Performance.getMetrics TaskDuration — the renderer main thread.
+              This is where the JS and canvas work lands.
+      total%  Cumulative CPU of the WHOLE browser process tree (ps -o time).
+              This catches the audio decode / resample threads, the GPU process
+              and compositing — everything the main-thread metric misses. It is
+              the number that predicts whether a slow machine copes.
+      work ms The app's own measured render-loop time (fade + trace), which is
+              far less noisy than any process-level sampling.
+
+    Every config is sandwiched between two baseline measurements inside ONE
+    browser session: launching a fresh browser per config added more noise than
+    most of the effects being measured.
+
+      node test/bench.js
+   ========================================================================== */
 
 const http = require('node:http');
 const path = require('node:path');
@@ -64,8 +64,8 @@ async function startServer() {
 }
 
 /** Cumulative CPU seconds of a process and all its descendants.
- *  NOTE: `ps` is blocked in some sandboxes, so we fall back to system-wide
- *  CPU deltas from os.cpus(), which needs no special permission. */
+    NOTE: `ps` is blocked in some sandboxes, so we fall back to system-wide
+    CPU deltas from os.cpus(), which needs no special permission. */
 let cpuProbeMode = 'ps';
 
 function osCpuTimes() {

@@ -185,8 +185,8 @@ async function addLocalFiles(files) {
   loadTrack(first, true);
 }
 /** Rebuild the <audio> element around the engine change and restore where the
- *  listener was. audio.js drives this because it owns the graph; knowing which
- *  file that is, is this layer's job. */
+    listener was. audio.js drives this because it owns the graph; knowing which
+    file that is, is this layer's job. */
 function reloadCurrentSource({ wasDemo, time, playing }) {
   if (wasDemo) { setDemo(true); return; }
   const t = tracks[curIndex];

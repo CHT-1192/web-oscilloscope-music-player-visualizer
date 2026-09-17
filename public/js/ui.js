@@ -211,7 +211,7 @@ function bindControls() {
   document.addEventListener('fullscreenchange', () => { if (layout()) flags.redraw = true; });
 }
 /** Audio-element listeners. Re-attached every time the engine rebuilds the
- *  element (a new AudioContext needs a new <audio> — see buildEngine). */
+    element (a new AudioContext needs a new <audio> — see buildEngine). */
 function bindAudioEvents(el) {
   el.addEventListener('play', () => {
     dom.btnPlay.classList.add('playing');
@@ -234,12 +234,12 @@ function bindAudioEvents(el) {
   });
 }
 /** Restore every setting to its default, including the derived state that
- *  syncControlsFromState() alone does not touch (analyser size, render
- *  scale, smoothing accumulators). Forgetting the analyser size here left a
- *  4096-sample window being drawn out of a 1024-sample buffer. */
+    syncControlsFromState() alone does not touch (analyser size, render
+    scale, smoothing accumulators). Forgetting the analyser size here left a
+    4096-sample window being drawn out of a 1024-sample buffer. */
 /** Switch the visible source to/from the built-in demo. audio.js owns the
- *  graph; the titles, the button, the preset memory and the render state are
- *  this layer's business — which is why the engine takes a hook instead. */
+    graph; the titles, the button, the preset memory and the render state are
+    this layer's business — which is why the engine takes a hook instead. */
 
 function resetSettings() {
   Object.assign(S, DEFAULTS);
@@ -254,9 +254,9 @@ function resetSettings() {
   noteSettingsChanged();
 }
 /** One-click low-power preset. The levers are chosen from measurements in
- *  test/bench.js: the per-frame cost is dominated by how many segments get
- *  drawn, so shrinking the window is what actually helps (32768 -> 1024 took
- *  a frame from 1.49 ms to 0.08 ms). Render scale barely moved the needle. */
+    test/bench.js: the per-frame cost is dominated by how many segments get
+    drawn, so shrinking the window is what actually helps (32768 -> 1024 took
+    a frame from 1.49 ms to 0.08 ms). Render scale barely moved the needle. */
 let perfSnapshot = null;
 function setPerfMode(on) {
   const btn = $('btnPerf');

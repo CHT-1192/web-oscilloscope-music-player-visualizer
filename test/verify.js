@@ -2,33 +2,33 @@
 'use strict';
 
 /* ============================================================================
- *  test/verify.js
- *
- *  End-to-end verification. Runs with zero required dependencies:
- *
- *    1. HTTP layer   — spawns server.js and exercises the routes, including
- *                      byte-range requests (needed for seeking a 270 MB FLAC)
- *                      and path-traversal rejection.
- *    2. Render layer — drives a real Chromium via Playwright (skipped with a
- *                      notice when Playwright is unavailable) and asserts the
- *                      two hard visual requirements:
- *
- *                        NO GLOW           : shadowBlur is never written and
- *                                            globalCompositeOperation is never
- *                                            set to 'lighter'.
- *                        NO RETRACE LINES  : the analyser is stubbed with a
- *                                            synthetic XY path that traces a
- *                                            square slowly and then makes a
- *                                            fast diagonal retrace across its
- *                                            middle. Whatever crosses the
- *                                            centre of the screen can only be
- *                                            that retrace, so the pixels there
- *                                            are measured directly.
- *
- *  Screenshots land in test/shots/ for eyeballing.
- *
- *    node test/verify.js
- * ========================================================================== */
+    test/verify.js
+
+    End-to-end verification. Runs with zero required dependencies:
+
+      1. HTTP layer   — spawns server.js and exercises the routes, including
+                        byte-range requests (needed for seeking a 270 MB FLAC)
+                        and path-traversal rejection.
+      2. Render layer — drives a real Chromium via Playwright (skipped with a
+                        notice when Playwright is unavailable) and asserts the
+                        two hard visual requirements:
+
+                          NO GLOW           : shadowBlur is never written and
+                                              globalCompositeOperation is never
+                                              set to 'lighter'.
+                          NO RETRACE LINES  : the analyser is stubbed with a
+                                              synthetic XY path that traces a
+                                              square slowly and then makes a
+                                              fast diagonal retrace across its
+                                              middle. Whatever crosses the
+                                              centre of the screen can only be
+                                              that retrace, so the pixels there
+                                              are measured directly.
+
+    Screenshots land in test/shots/ for eyeballing.
+
+      node test/verify.js
+   ========================================================================== */
 
 const http = require('node:http');
 const fs = require('node:fs');
@@ -71,8 +71,8 @@ function get(url, opts = {}) {
 }
 
 /** Ask an INDEPENDENT decoder what each file really is: rate, channels, bits,
- *  duration. Used to check the server's own header parser, and to survive the
- *  test audio being swapped out for different formats. */
+    duration. Used to check the server's own header parser, and to survive the
+    test audio being swapped out for different formats. */
 function externalProbe(fileNames) {
   const has = (bin) => {
     try { execSync(`command -v ${bin}`, { stdio: 'ignore' }); return true; } catch { return false; }
@@ -172,9 +172,9 @@ async function startServer() {
 /* ------------------------------------------------------------ default port */
 
 /** The listen port is not a cosmetic choice: it decides whether `node server.js`
- *  just works. These checks keep the constant, the help text and the boot path
- *  from drifting apart, and pin the one property we actually care about — the
- *  default must not be the number every other dev server already took. */
+    just works. These checks keep the constant, the help text and the boot path
+    from drifting apart, and pin the one property we actually care about — the
+    default must not be the number every other dev server already took. */
 function defaultPortTests() {
   section('default port');
 
@@ -212,7 +212,7 @@ function defaultPortTests() {
 }
 
 /** EADDRINUSE must walk forward instead of dying — and the walk starts from
- *  whatever base was requested, which is now a 5-digit number. */
+    whatever base was requested, which is now a 5-digit number. */
 async function portRetryTest() {
   const base = PORT + 50;
   const spawnServer = (port) => spawn(process.execPath, [path.join(ROOT, 'server.js'), '--port', String(port)], {
@@ -1480,7 +1480,7 @@ function bandBins(samples, lo, hi, rate) {
 }
 
 /** Band power spectral density in dB relative to the 1–10 kHz band.
- *  PSD (not total band energy) so a wide band isn't flattered by bin count. */
+    PSD (not total band energy) so a wide band isn't flattered by bin count. */
 function bandDb(samples, lo, hi, rate) {
   const b = bandBins(samples, lo, hi, rate);
   if (b.bins === 0 || b.psd === 0) return { db: -Infinity, bins: b.bins };

@@ -979,13 +979,13 @@ body.idle { cursor: none; }
 /* ---- js/core.js ---------------------------------------------------- */
 __define("js/core.js", function (__exp, __req) {
 /* ============================================================================
- *  core.js — the leaves: shorthands, the settings object, DOM refs, toast
- *
- *  Nothing here depends on anything else in the app, which is what lets every
- *  other module import it without a cycle. `S` and `dom` are exported as
- *  objects on purpose: callers mutate their fields, and a shared object
- *  reference survives being imported, while a re-exported primitive would not.
- * ========================================================================== */
+    core.js — the leaves: shorthands, the settings object, DOM refs, toast
+
+    Nothing here depends on anything else in the app, which is what lets every
+    other module import it without a cycle. `S` and `dom` are exported as
+    objects on purpose: callers mutate their fields, and a shared object
+    reference survives being imported, while a re-exported primitive would not.
+   ========================================================================== */
 
 /* ------------------------------------------------------------------ utils */
 
@@ -1048,13 +1048,13 @@ const S = Object.assign({}, DEFAULTS);
 const winSize = () => WINDOW_CHOICES[clamp(S.windowIdx | 0, 0, WINDOW_CHOICES.length - 1)];
 
 /** Flags any module may set and only the render loop clears.
- *  They live here, not in render.js, because the audio graph, the settings
- *  bridge and the UI all invalidate the picture — and audio.js must not depend
- *  on render.js (render depends on audio for the samples). */
+    They live here, not in render.js, because the audio graph, the settings
+    bridge and the UI all invalidate the picture — and audio.js must not depend
+    on render.js (render depends on audio for the samples). */
 const flags = { redraw: true, settle: 0 };
 
 /** The keys a preset carries. rateMode and renderScale describe the machine you
- *  happen to be on, so a preset must not carry them to someone else's laptop. */
+    happen to be on, so a preset must not carry them to someone else's laptop. */
 const PRESET_KEYS = Object.keys(DEFAULTS).filter((k) => k !== 'rateMode' && k !== 'renderScale');
 
 const FORMATTERS = {
@@ -1149,22 +1149,22 @@ const {
 /* ----------------------------------------------------------- audio graph */
 
 /*  Sample-rate policy
- *  ------------------
- *  A WebAudio graph runs at exactly one rate, and a MediaElementAudioSource
- *  resamples decoded media into it. A default AudioContext runs at the
- *  *device* rate (48 kHz on most machines), so a 192 kHz FLAC would be
- *  resampled down and everything above 24 kHz thrown away.
- *
- *  Verified against an independent ffmpeg decode of the bundled FLAC: when
- *  the context rate equals the file's own rate, the analyser returns the
- *  file's samples BIT-FOR-BIT (residual exactly 0, max|diff| 0). So by
- *  default the context is built at the source's native rate and nothing is
- *  resampled on the visual path.
- *
- *  (The OS still resamples the final output for your speakers. That is
- *  unavoidable — the device runs at 48 kHz — and it cannot affect what is
- *  drawn, because the analysers tap the graph, not the output.)
- */
+    ------------------
+    A WebAudio graph runs at exactly one rate, and a MediaElementAudioSource
+    resamples decoded media into it. A default AudioContext runs at the
+    *device* rate (48 kHz on most machines), so a 192 kHz FLAC would be
+    resampled down and everything above 24 kHz thrown away.
+
+    Verified against an independent ffmpeg decode of the bundled FLAC: when
+    the context rate equals the file's own rate, the analyser returns the
+    file's samples BIT-FOR-BIT (residual exactly 0, max|diff| 0). So by
+    default the context is built at the source's native rate and nothing is
+    resampled on the visual path.
+
+    (The OS still resamples the final output for your speakers. That is
+    unavoidable — the device runs at 48 kHz — and it cannot affect what is
+    drawn, because the analysers tap the graph, not the output.)
+*/
 const RATE_MIN = 8000;
 const RATE_MAX = 384000;
 
@@ -1245,8 +1245,8 @@ function teardownEngine() {
 }
 
 /** Build a fresh context at `want` Hz (0 = device default).
- *  createMediaElementSource may only ever be called once per element, so the
- *  <audio> element has to be replaced together with the context. */
+    createMediaElementSource may only ever be called once per element, so the
+    <audio> element has to be replaced together with the context. */
 let elementHook = null;
 function setElementHook(fn) { elementHook = fn; }
 
@@ -1423,9 +1423,9 @@ function buildDemo() {
 }
 
 /** Switch the analysis source to/from the built-in demo. The GRAPH is all
- *  this owns: titles, the button state, the preset memory and the render state
- *  belong to whoever asked (playlist.js). That is what keeps audio.js free of
- *  any dependency on the UI or the renderer. */
+    this owns: titles, the button state, the preset memory and the render state
+    belong to whoever asked (playlist.js). That is what keeps audio.js free of
+    any dependency on the UI or the renderer. */
 function setDemoSource(on) {
   const ctx = resumeContext();
   if (!ctx) return false;
@@ -1476,7 +1476,7 @@ const isDemo = () => source === 'demo';
 function setSourceRate(rate) { sourceRate = rate || 0; }
 
 /** Buffers WITHOUT re-reading the analysers. A paused <audio> element reports
- *  silence, so the renderer keeps painting the last captured window instead. */
+    silence, so the renderer keeps painting the last captured window instead. */
 const signal = () => ({ L: bufL, R: bufR, capacity: analyserSize, float: useFloat });
 
 /** Everything the debug seam and the rate badge need to know. */
@@ -1559,19 +1559,19 @@ let qualityCooldown = 0;
 let workStatCountdown = 30;
 
 /* Rolling window of per-frame render times.
- *
- *  performance.now() is quantised to 100 us in Chrome, which is coarser than
- *  the differences worth measuring, so no single sample is useful. Two
- *  properties make the window work anyway:
- *    - averaging many quantised samples recovers sub-quantum resolution;
- *    - background load (another app, a compile) can only ever ADD slow
- *      frames, so it shows up purely as a right tail.
- *  So `trimmed()` — the mean of the fastest quarter — is both sub-quantum
- *  accurate and insensitive to whatever else the machine is doing.
- *
- *  Keep the window SHORT (~2 s): a long one both slows the quality
- *  adaptation down and, when a measurement starts, is still full of stale
- *  frames from before the change. */
+
+    performance.now() is quantised to 100 us in Chrome, which is coarser than
+    the differences worth measuring, so no single sample is useful. Two
+    properties make the window work anyway:
+      - averaging many quantised samples recovers sub-quantum resolution;
+      - background load (another app, a compile) can only ever ADD slow
+        frames, so it shows up purely as a right tail.
+    So `trimmed()` — the mean of the fastest quarter — is both sub-quantum
+    accurate and insensitive to whatever else the machine is doing.
+
+    Keep the window SHORT (~2 s): a long one both slows the quality
+    adaptation down and, when a measurement starts, is still full of stale
+    frames from before the change. */
 const WORK_RING = new Float32Array(120);
 const WORK_SORT = new Float32Array(120);
 let workPos = 0;
@@ -1620,9 +1620,9 @@ function effectiveDpr() {
 }
 
 /** How far the open side panels reach into the stage, in CSS px. The canvas
- *  itself is never resized for a panel; only the PLOT gives up room, and only
- *  as much as it must. On a wide window the square plot has a margin wide
- *  enough to hide a whole panel, so nothing moves at all. */
+    itself is never resized for a panel; only the PLOT gives up room, and only
+    as much as it must. On a wide window the square plot has a margin wide
+    enough to hide a whole panel, so nothing moves at all. */
 function panelInset() {
   const stage = dom.stage.getBoundingClientRect();
   if (!stage.width) return 0;
@@ -1667,9 +1667,9 @@ function layout() {
 }
 
 /** Resize a canvas without throwing away what is already on it.
- *  Assigning canvas.width clears the bitmap, which would silently destroy the
- *  accumulated afterglow / burn-in on every window resize or fullscreen
- *  toggle — and the whole point of those layers is that they persist. */
+    Assigning canvas.width clears the bitmap, which would silently destroy the
+    accumulated afterglow / burn-in on every window resize or fullscreen
+    toggle — and the whole point of those layers is that they persist. */
 function resizeKeeping(canvas, ctx) {
   const ow = canvas.width, oh = canvas.height;
   if (!ow || !oh) { canvas.width = W; canvas.height = H; return; }
@@ -1707,12 +1707,12 @@ function updatePerfBadge() {
 }
 
 /** Shrink the render target when a frame costs too much, grow it back when
- *  there is headroom.
- *
- *  Driven by the MEDIAN of a rolling window rather than a mean: a single
- *  slow frame (GC pause, another app on the machine, a compile in the
- *  background) should not trigger a resolution drop, and the median is what
- *  a mean cannot give us. */
+    there is headroom.
+
+    Driven by the MEDIAN of a rolling window rather than a mean: a single
+    slow frame (GC pause, another app on the machine, a compile in the
+    background) should not trigger a resolution drop, and the median is what
+    a mean cannot give us. */
 function adaptQuality(workMs) {
   recordWork(workMs);
   workAvg += (workMs - workAvg) * 0.08;
@@ -1865,16 +1865,16 @@ function fadeLayer(ctx, alpha) {
 }
 
 /* ---- the 8-bit quantisation floor (the "residue" slider) --------------
- * destination-out multiplies alpha: n <- n*(1-a). With round-to-nearest
- * 8-bit storage, every n <= 1/(2a) is a FIXED POINT and never decays. So a
- * slow fade (high 余辉) does not leave a longer ghost, it leaves a BRIGHTER
- * one — at 100% the floor is alpha ~15, clearly visible, and the whole region
- * the beam has ever swept keeps it forever.
- *
- * A periodic strong scrub is the only way out: a step of 1.0 clears the floor
- * completely, and anything weaker leaves a predictable amount of it behind.
- * Hence one slider, expressed as the residue you are willing to keep.
- */
+   destination-out multiplies alpha: n <- n*(1-a). With round-to-nearest
+   8-bit storage, every n <= 1/(2a) is a FIXED POINT and never decays. So a
+   slow fade (high 余辉) does not leave a longer ghost, it leaves a BRIGHTER
+   one — at 100% the floor is alpha ~15, clearly visible, and the whole region
+   the beam has ever swept keeps it forever.
+
+   A periodic strong scrub is the only way out: a step of 1.0 clears the floor
+   completely, and anything weaker leaves a predictable amount of it behind.
+   Hence one slider, expressed as the residue you are willing to keep.
+*/
 const SCRUB_EVERY = 180;   // frames (~3 s, longer than any visible trail)
 let scrubTick = 0;
 
@@ -2051,7 +2051,7 @@ function drawTrace(L, R, capacity, n, live) {
 }
 
 /** Stroke the already-computed beam path into `ctx` with `base` as the peak
- *  alpha. Shared by the afterglow layer and the burn-in layer. */
+    alpha. Shared by the afterglow layer and the burn-in layer. */
 function paintInto(ctx, n, base) {
   ctx.lineWidth = S.lineWidth * DPR;
   ctx.lineJoin = 'round';
@@ -2101,7 +2101,7 @@ let uiTick = 0;
    keeps painting this instead of re-reading them. */
 let frame = null;
 /** The transport readout lives in ui.js. The loop must not import the UI, so
- *  the consumer registers itself here instead — one line, one direction. */
+    the consumer registers itself here instead — one line, one direction. */
 let tick = null;
 function setTickHandler(fn) { tick = fn; }
 
@@ -2167,7 +2167,7 @@ function loop(ts) {
 /* ------------------------------------------------- what the rest of the app uses */
 
 /** A track change, a preset or a reset: forget everything the previous picture
- *  taught the beam. `settle` asks the afterglow to rebuild from scratch. */
+    taught the beam. `settle` asks the afterglow to rebuild from scratch. */
 function resetTraceState({ settle = false } = {}) {
   refSpeed = 0;
   agGain = 1;
@@ -2189,7 +2189,7 @@ function resetQuality() { autoScale = 1; workAvg = 0; qualityCooldown = 120; }
 function resettle() { flags.settle = 100; flags.redraw = true; }
 
 /** Background + beam, for the save-PNG button. The ghost layer is deliberately
- *  not composited: it is a screen artefact, not part of the picture. */
+    not composited: it is a screen artefact, not part of the picture. */
 function composite() {
   if (!W || !H) return null;
   const c = document.createElement('canvas');
@@ -2444,9 +2444,9 @@ function cleanName(v) {
   return String(v == null ? '' : v).replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 24);
 }
 /** Snap a number onto its control's own grid. Presets arrive from storage and
- *  from other people's exports, and a value the slider cannot express would
- *  make the readout disagree with what is actually rendering — the exact bug
- *  class this file keeps having to fix. */
+    from other people's exports, and a value the slider cannot express would
+    make the readout disagree with what is actually rendering — the exact bug
+    class this file keeps having to fix. */
 
 const allPresets = () => BUILTIN_PRESETS.concat(customPresets);
 const findPreset = (name) => allPresets().find((p) => p.name === name) || null;
@@ -2461,7 +2461,7 @@ function applyPreset(name) {
   toast(`预设：${name}`);
 }
 /** The playlist owns which track is loaded; the preset layer is told, so it
- *  needs no reference back into the playlist (which would close a cycle). */
+    needs no reference back into the playlist (which would close a cycle). */
 let trackKey = null;
 let trackLabel = null;
 function setTrackKey(key, label) {
@@ -2974,8 +2974,8 @@ async function addLocalFiles(files) {
   loadTrack(first, true);
 }
 /** Rebuild the <audio> element around the engine change and restore where the
- *  listener was. audio.js drives this because it owns the graph; knowing which
- *  file that is, is this layer's job. */
+    listener was. audio.js drives this because it owns the graph; knowing which
+    file that is, is this layer's job. */
 function reloadCurrentSource({ wasDemo, time, playing }) {
   if (wasDemo) { setDemo(true); return; }
   const t = tracks[curIndex];
@@ -3315,7 +3315,7 @@ function bindControls() {
   document.addEventListener('fullscreenchange', () => { if (layout()) flags.redraw = true; });
 }
 /** Audio-element listeners. Re-attached every time the engine rebuilds the
- *  element (a new AudioContext needs a new <audio> — see buildEngine). */
+    element (a new AudioContext needs a new <audio> — see buildEngine). */
 function bindAudioEvents(el) {
   el.addEventListener('play', () => {
     dom.btnPlay.classList.add('playing');
@@ -3338,12 +3338,12 @@ function bindAudioEvents(el) {
   });
 }
 /** Restore every setting to its default, including the derived state that
- *  syncControlsFromState() alone does not touch (analyser size, render
- *  scale, smoothing accumulators). Forgetting the analyser size here left a
- *  4096-sample window being drawn out of a 1024-sample buffer. */
+    syncControlsFromState() alone does not touch (analyser size, render
+    scale, smoothing accumulators). Forgetting the analyser size here left a
+    4096-sample window being drawn out of a 1024-sample buffer. */
 /** Switch the visible source to/from the built-in demo. audio.js owns the
- *  graph; the titles, the button, the preset memory and the render state are
- *  this layer's business — which is why the engine takes a hook instead. */
+    graph; the titles, the button, the preset memory and the render state are
+    this layer's business — which is why the engine takes a hook instead. */
 
 function resetSettings() {
   Object.assign(S, DEFAULTS);
@@ -3358,9 +3358,9 @@ function resetSettings() {
   noteSettingsChanged();
 }
 /** One-click low-power preset. The levers are chosen from measurements in
- *  test/bench.js: the per-frame cost is dominated by how many segments get
- *  drawn, so shrinking the window is what actually helps (32768 -> 1024 took
- *  a frame from 1.49 ms to 0.08 ms). Render scale barely moved the needle. */
+    test/bench.js: the per-frame cost is dominated by how many segments get
+    drawn, so shrinking the window is what actually helps (32768 -> 1024 took
+    a frame from 1.49 ms to 0.08 ms). Render scale barely moved the needle. */
 let perfSnapshot = null;
 function setPerfMode(on) {
   const btn = $('btnPerf');
@@ -3593,29 +3593,29 @@ const {
 } = render;
 
 /* ============================================================================
- *  Web Oscilloscope Music Player / Visualizer
- *  ---------------------------------------------------------------------------
- *  Renders a stereo signal as an X/Y beam path:  left channel -> X, right -> Y.
- *
- *  DESIGN CONSTRAINTS (explicitly requested)
- *  ---------------------------------------------------------------------------
- *  1. NO RETRACE LINES (无回扫线)
- *     - A trace path is never `closePath()`d, so the beam never jumps from the
- *       end of a sweep back to its start.
- *     - Every frame starts a fresh sub-path with `moveTo()`; segments are never
- *       joined across analysis frames, so no wrap-around chord is ever drawn.
- *     - Optional VELOCITY BLANKING dims fast beam movements (brightness ∝ 1/v).
- *       Retrace/blanking sweeps in oscilloscope music are fast, so they fade to
- *       near-invisible exactly as they do on a real CRT — this is the principled
- *       way to kill retrace lines, not a post-process trick.
- *
- *  2. NO GLOW (无辉光)
- *     - No `shadowBlur` / `shadowColor`, no bloom pass.
- *     - No `globalCompositeOperation = 'lighter'` (additive) accumulation.
- *     - No CSS blur/drop-shadow filter anywhere near the canvas.
- *     - Afterglow uses `destination-out` alpha decay: pixels only ever get
- *       *dimmer*, they never add brightness to their neighbours.
- * ========================================================================== */
+    Web Oscilloscope Music Player / Visualizer
+    ---------------------------------------------------------------------------
+    Renders a stereo signal as an X/Y beam path:  left channel -> X, right -> Y.
+
+    DESIGN CONSTRAINTS (explicitly requested)
+    ---------------------------------------------------------------------------
+    1. NO RETRACE LINES (无回扫线)
+       - A trace path is never `closePath()`d, so the beam never jumps from the
+         end of a sweep back to its start.
+       - Every frame starts a fresh sub-path with `moveTo()`; segments are never
+         joined across analysis frames, so no wrap-around chord is ever drawn.
+       - Optional VELOCITY BLANKING dims fast beam movements (brightness ∝ 1/v).
+         Retrace/blanking sweeps in oscilloscope music are fast, so they fade to
+         near-invisible exactly as they do on a real CRT — this is the principled
+         way to kill retrace lines, not a post-process trick.
+
+    2. NO GLOW (无辉光)
+       - No `shadowBlur` / `shadowColor`, no bloom pass.
+       - No `globalCompositeOperation = 'lighter'` (additive) accumulation.
+       - No CSS blur/drop-shadow filter anywhere near the canvas.
+       - Afterglow uses `destination-out` alpha decay: pixels only ever get
+         *dimmer*, they never add brightness to their neighbours.
+   ========================================================================== */
 
 
 

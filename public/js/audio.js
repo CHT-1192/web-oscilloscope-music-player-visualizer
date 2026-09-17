@@ -18,22 +18,22 @@ const {
 /* ----------------------------------------------------------- audio graph */
 
 /*  Sample-rate policy
- *  ------------------
- *  A WebAudio graph runs at exactly one rate, and a MediaElementAudioSource
- *  resamples decoded media into it. A default AudioContext runs at the
- *  *device* rate (48 kHz on most machines), so a 192 kHz FLAC would be
- *  resampled down and everything above 24 kHz thrown away.
- *
- *  Verified against an independent ffmpeg decode of the bundled FLAC: when
- *  the context rate equals the file's own rate, the analyser returns the
- *  file's samples BIT-FOR-BIT (residual exactly 0, max|diff| 0). So by
- *  default the context is built at the source's native rate and nothing is
- *  resampled on the visual path.
- *
- *  (The OS still resamples the final output for your speakers. That is
- *  unavoidable — the device runs at 48 kHz — and it cannot affect what is
- *  drawn, because the analysers tap the graph, not the output.)
- */
+    ------------------
+    A WebAudio graph runs at exactly one rate, and a MediaElementAudioSource
+    resamples decoded media into it. A default AudioContext runs at the
+    *device* rate (48 kHz on most machines), so a 192 kHz FLAC would be
+    resampled down and everything above 24 kHz thrown away.
+
+    Verified against an independent ffmpeg decode of the bundled FLAC: when
+    the context rate equals the file's own rate, the analyser returns the
+    file's samples BIT-FOR-BIT (residual exactly 0, max|diff| 0). So by
+    default the context is built at the source's native rate and nothing is
+    resampled on the visual path.
+
+    (The OS still resamples the final output for your speakers. That is
+    unavoidable — the device runs at 48 kHz — and it cannot affect what is
+    drawn, because the analysers tap the graph, not the output.)
+*/
 const RATE_MIN = 8000;
 const RATE_MAX = 384000;
 
@@ -114,8 +114,8 @@ function teardownEngine() {
 }
 
 /** Build a fresh context at `want` Hz (0 = device default).
- *  createMediaElementSource may only ever be called once per element, so the
- *  <audio> element has to be replaced together with the context. */
+    createMediaElementSource may only ever be called once per element, so the
+    <audio> element has to be replaced together with the context. */
 let elementHook = null;
 function setElementHook(fn) { elementHook = fn; }
 
@@ -292,9 +292,9 @@ function buildDemo() {
 }
 
 /** Switch the analysis source to/from the built-in demo. The GRAPH is all
- *  this owns: titles, the button state, the preset memory and the render state
- *  belong to whoever asked (playlist.js). That is what keeps audio.js free of
- *  any dependency on the UI or the renderer. */
+    this owns: titles, the button state, the preset memory and the render state
+    belong to whoever asked (playlist.js). That is what keeps audio.js free of
+    any dependency on the UI or the renderer. */
 function setDemoSource(on) {
   const ctx = resumeContext();
   if (!ctx) return false;
@@ -345,7 +345,7 @@ const isDemo = () => source === 'demo';
 function setSourceRate(rate) { sourceRate = rate || 0; }
 
 /** Buffers WITHOUT re-reading the analysers. A paused <audio> element reports
- *  silence, so the renderer keeps painting the last captured window instead. */
+    silence, so the renderer keeps painting the last captured window instead. */
 const signal = () => ({ L: bufL, R: bufR, capacity: analyserSize, float: useFloat });
 
 /** Everything the debug seam and the rate badge need to know. */

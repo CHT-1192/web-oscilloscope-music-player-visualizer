@@ -51,9 +51,9 @@ function cleanName(v) {
   return String(v == null ? '' : v).replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 24);
 }
 /** Snap a number onto its control's own grid. Presets arrive from storage and
- *  from other people's exports, and a value the slider cannot express would
- *  make the readout disagree with what is actually rendering — the exact bug
- *  class this file keeps having to fix. */
+    from other people's exports, and a value the slider cannot express would
+    make the readout disagree with what is actually rendering — the exact bug
+    class this file keeps having to fix. */
 
 const allPresets = () => BUILTIN_PRESETS.concat(customPresets);
 const findPreset = (name) => allPresets().find((p) => p.name === name) || null;
@@ -68,7 +68,7 @@ function applyPreset(name) {
   toast(`预设：${name}`);
 }
 /** The playlist owns which track is loaded; the preset layer is told, so it
- *  needs no reference back into the playlist (which would close a cycle). */
+    needs no reference back into the playlist (which would close a cycle). */
 let trackKey = null;
 let trackLabel = null;
 function setTrackKey(key, label) {

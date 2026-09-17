@@ -55,29 +55,29 @@ const {
 } = render;
 
 /* ============================================================================
- *  Web Oscilloscope Music Player / Visualizer
- *  ---------------------------------------------------------------------------
- *  Renders a stereo signal as an X/Y beam path:  left channel -> X, right -> Y.
- *
- *  DESIGN CONSTRAINTS (explicitly requested)
- *  ---------------------------------------------------------------------------
- *  1. NO RETRACE LINES (无回扫线)
- *     - A trace path is never `closePath()`d, so the beam never jumps from the
- *       end of a sweep back to its start.
- *     - Every frame starts a fresh sub-path with `moveTo()`; segments are never
- *       joined across analysis frames, so no wrap-around chord is ever drawn.
- *     - Optional VELOCITY BLANKING dims fast beam movements (brightness ∝ 1/v).
- *       Retrace/blanking sweeps in oscilloscope music are fast, so they fade to
- *       near-invisible exactly as they do on a real CRT — this is the principled
- *       way to kill retrace lines, not a post-process trick.
- *
- *  2. NO GLOW (无辉光)
- *     - No `shadowBlur` / `shadowColor`, no bloom pass.
- *     - No `globalCompositeOperation = 'lighter'` (additive) accumulation.
- *     - No CSS blur/drop-shadow filter anywhere near the canvas.
- *     - Afterglow uses `destination-out` alpha decay: pixels only ever get
- *       *dimmer*, they never add brightness to their neighbours.
- * ========================================================================== */
+    Web Oscilloscope Music Player / Visualizer
+    ---------------------------------------------------------------------------
+    Renders a stereo signal as an X/Y beam path:  left channel -> X, right -> Y.
+
+    DESIGN CONSTRAINTS (explicitly requested)
+    ---------------------------------------------------------------------------
+    1. NO RETRACE LINES (无回扫线)
+       - A trace path is never `closePath()`d, so the beam never jumps from the
+         end of a sweep back to its start.
+       - Every frame starts a fresh sub-path with `moveTo()`; segments are never
+         joined across analysis frames, so no wrap-around chord is ever drawn.
+       - Optional VELOCITY BLANKING dims fast beam movements (brightness ∝ 1/v).
+         Retrace/blanking sweeps in oscilloscope music are fast, so they fade to
+         near-invisible exactly as they do on a real CRT — this is the principled
+         way to kill retrace lines, not a post-process trick.
+
+    2. NO GLOW (无辉光)
+       - No `shadowBlur` / `shadowColor`, no bloom pass.
+       - No `globalCompositeOperation = 'lighter'` (additive) accumulation.
+       - No CSS blur/drop-shadow filter anywhere near the canvas.
+       - Afterglow uses `destination-out` alpha decay: pixels only ever get
+         *dimmer*, they never add brightness to their neighbours.
+   ========================================================================== */
 
 
 
