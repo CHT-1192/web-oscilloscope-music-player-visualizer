@@ -44,7 +44,7 @@
 ```bash
 node server.js --open      # 打开 http://127.0.0.1:10240
 node server.js -p 8080     # 换端口（被占用会自动 +1 重试；也可用环境变量 PORT）
-node test/verify.js        # 93 项端到端验证
+node test/verify.js        # 96 项端到端验证
 node test/bench.js         # 性能基准
 node build-standalone.js   # 改完 public/ 后重新生成单文件版
 ```
