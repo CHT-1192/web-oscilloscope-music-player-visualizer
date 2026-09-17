@@ -54,6 +54,27 @@
     <div class="panel-body">
 
       <section class="group">
+        <h3>预设 <span>presets</span></h3>
+        <div class="seg" id="presetMode" role="radiogroup" aria-label="预设模式">
+          <button type="button" role="radio" aria-checked="true" data-mode="auto" title="换曲子时自动套用这首曲子上次用的设置；改了什么就记什么">自动 · 按曲记忆</button>
+          <button type="button" role="radio" aria-checked="false" data-mode="manual" title="换曲子不改变设置，只有点预设才套用">手动</button>
+        </div>
+        <div class="chips" id="presetChips"></div>
+        <p class="preset-status" id="presetStatus"></p>
+        <div class="preset-io">
+          <button type="button" class="ghost" id="btnPresetSave">保存当前</button>
+          <button type="button" class="ghost" id="btnPresetExport">导出</button>
+          <button type="button" class="ghost" id="btnPresetImport">导入</button>
+        </div>
+        <div class="preset-row" id="presetRow" hidden>
+          <input type="text" id="presetName" maxlength="24" placeholder="预设名" aria-label="预设名" />
+          <button type="button" class="ghost" id="btnPresetCommit">保存</button>
+          <button type="button" class="ghost" id="btnPresetCancel">取消</button>
+        </div>
+        <textarea class="preset-text" id="presetText" hidden spellcheck="false" aria-label="预设文本" placeholder="导出后在这里复制；粘贴别人的预设后点「导入」"></textarea>
+      </section>
+
+      <section class="group">
         <h3>信号 <span>signal</span></h3>
         <label class="row"><span>X 增益</span><input type="range" data-set="gainX" min="0.1" max="4" step="0.01" /><output data-out="gainX"></output></label>
         <label class="row"><span>Y 增益</span><input type="range" data-set="gainY" min="0.1" max="4" step="0.01" /><output data-out="gainY"></output></label>

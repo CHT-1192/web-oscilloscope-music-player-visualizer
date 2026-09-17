@@ -520,6 +520,97 @@ input[type="range"]::-moz-range-thumb {
 }
 .ghost:hover { border-color: var(--edge-strong); color: #e2eeeb; }
 
+/* ── presets ──────────────────────────────────────────────────────────── */
+
+/* two modes, not two options of one thing, so they get a segmented control
+   rather than a pair of independent toggles */
+.seg { display: flex; gap: 0; padding: 2px 0 8px; }
+.seg button {
+  appearance: none;
+  flex: 1 1 0;
+  font: inherit;
+  font-size: 11.5px;
+  padding: 6px 8px;
+  border: 1px solid var(--edge);
+  background: transparent;
+  color: #8fa2a0;
+  cursor: pointer;
+  transition: all 0.16s;
+}
+.seg button:first-child { border-radius: 8px 0 0 8px; }
+.seg button:last-child { border-radius: 0 8px 8px 0; margin-left: -1px; }
+.seg button:hover { color: #d6e5e1; }
+.seg button[aria-checked="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-wash);
+}
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 0 6px; }
+.chip {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: inherit;
+  font-size: 11.5px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--edge);
+  background: rgba(255, 255, 255, 0.025);
+  color: #93a6a3;
+  cursor: pointer;
+  max-width: 100%;
+  transition: all 0.16s;
+}
+.chip:hover { border-color: var(--edge-strong); color: #d6e5e1; }
+.chip.active { border-color: var(--accent); color: var(--accent); background: var(--accent-wash); }
+.chip .x { font-size: 13px; line-height: 1; opacity: 0.5; padding: 0 1px; }
+.chip .x:hover { opacity: 1; }
+/* deleting a preset is not undoable, so the first click only arms it */
+.chip.armed { border-color: rgba(255, 107, 138, 0.6); color: #ff6b8a; background: rgba(255, 107, 138, 0.08); }
+.preset-status {
+  margin: 2px 0 8px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted-dim);
+  min-height: 1.6em;
+}
+.preset-status b { color: var(--accent); font-weight: 500; }
+.preset-io { display: flex; gap: 6px; }
+.preset-io .ghost { width: auto; flex: 1 1 0; font-size: 11.5px; padding: 6px 8px; }
+.preset-row { display: flex; gap: 6px; padding-top: 6px; }
+.preset-row[hidden] { display: none; }
+.preset-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--edge);
+  background: rgba(0, 0, 0, 0.3);
+  color: var(--text);
+}
+.preset-row input:focus { outline: none; border-color: var(--accent); }
+.preset-row .ghost { width: auto; font-size: 11.5px; padding: 6px 10px; }
+.preset-text {
+  width: 100%;
+  height: 92px;
+  margin-top: 6px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  padding: 7px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--edge);
+  background: rgba(0, 0, 0, 0.34);
+  color: var(--text);
+  resize: vertical;
+}
+.preset-text[hidden] { display: none; }
+.preset-text:focus { outline: none; border-color: var(--accent); }
+
 /* ── playlist ─────────────────────────────────────────────────────────── */
 
 .tracks {

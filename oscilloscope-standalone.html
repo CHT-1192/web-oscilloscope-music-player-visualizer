@@ -541,6 +541,97 @@ input[type="range"]::-moz-range-thumb {
 }
 .ghost:hover { border-color: var(--edge-strong); color: #e2eeeb; }
 
+/* ── presets ──────────────────────────────────────────────────────────── */
+
+/* two modes, not two options of one thing, so they get a segmented control
+   rather than a pair of independent toggles */
+.seg { display: flex; gap: 0; padding: 2px 0 8px; }
+.seg button {
+  appearance: none;
+  flex: 1 1 0;
+  font: inherit;
+  font-size: 11.5px;
+  padding: 6px 8px;
+  border: 1px solid var(--edge);
+  background: transparent;
+  color: #8fa2a0;
+  cursor: pointer;
+  transition: all 0.16s;
+}
+.seg button:first-child { border-radius: 8px 0 0 8px; }
+.seg button:last-child { border-radius: 0 8px 8px 0; margin-left: -1px; }
+.seg button:hover { color: #d6e5e1; }
+.seg button[aria-checked="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-wash);
+}
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 0 6px; }
+.chip {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: inherit;
+  font-size: 11.5px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--edge);
+  background: rgba(255, 255, 255, 0.025);
+  color: #93a6a3;
+  cursor: pointer;
+  max-width: 100%;
+  transition: all 0.16s;
+}
+.chip:hover { border-color: var(--edge-strong); color: #d6e5e1; }
+.chip.active { border-color: var(--accent); color: var(--accent); background: var(--accent-wash); }
+.chip .x { font-size: 13px; line-height: 1; opacity: 0.5; padding: 0 1px; }
+.chip .x:hover { opacity: 1; }
+/* deleting a preset is not undoable, so the first click only arms it */
+.chip.armed { border-color: rgba(255, 107, 138, 0.6); color: #ff6b8a; background: rgba(255, 107, 138, 0.08); }
+.preset-status {
+  margin: 2px 0 8px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted-dim);
+  min-height: 1.6em;
+}
+.preset-status b { color: var(--accent); font-weight: 500; }
+.preset-io { display: flex; gap: 6px; }
+.preset-io .ghost { width: auto; flex: 1 1 0; font-size: 11.5px; padding: 6px 8px; }
+.preset-row { display: flex; gap: 6px; padding-top: 6px; }
+.preset-row[hidden] { display: none; }
+.preset-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--edge);
+  background: rgba(0, 0, 0, 0.3);
+  color: var(--text);
+}
+.preset-row input:focus { outline: none; border-color: var(--accent); }
+.preset-row .ghost { width: auto; font-size: 11.5px; padding: 6px 10px; }
+.preset-text {
+  width: 100%;
+  height: 92px;
+  margin-top: 6px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  padding: 7px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--edge);
+  background: rgba(0, 0, 0, 0.34);
+  color: var(--text);
+  resize: vertical;
+}
+.preset-text[hidden] { display: none; }
+.preset-text:focus { outline: none; border-color: var(--accent); }
+
 /* ── playlist ─────────────────────────────────────────────────────────── */
 
 .tracks {
@@ -716,6 +807,27 @@ body.idle { cursor: none; }
       <button type="button" class="x" data-close="panelSettings" title="关闭">✕</button>
     </div>
     <div class="panel-body">
+
+      <section class="group">
+        <h3>预设 <span>presets</span></h3>
+        <div class="seg" id="presetMode" role="radiogroup" aria-label="预设模式">
+          <button type="button" role="radio" aria-checked="true" data-mode="auto" title="换曲子时自动套用这首曲子上次用的设置；改了什么就记什么">自动 · 按曲记忆</button>
+          <button type="button" role="radio" aria-checked="false" data-mode="manual" title="换曲子不改变设置，只有点预设才套用">手动</button>
+        </div>
+        <div class="chips" id="presetChips"></div>
+        <p class="preset-status" id="presetStatus"></p>
+        <div class="preset-io">
+          <button type="button" class="ghost" id="btnPresetSave">保存当前</button>
+          <button type="button" class="ghost" id="btnPresetExport">导出</button>
+          <button type="button" class="ghost" id="btnPresetImport">导入</button>
+        </div>
+        <div class="preset-row" id="presetRow" hidden>
+          <input type="text" id="presetName" maxlength="24" placeholder="预设名" aria-label="预设名" />
+          <button type="button" class="ghost" id="btnPresetCommit">保存</button>
+          <button type="button" class="ghost" id="btnPresetCancel">取消</button>
+        </div>
+        <textarea class="preset-text" id="presetText" hidden spellcheck="false" aria-label="预设文本" placeholder="导出后在这里复制；粘贴别人的预设后点「导入」"></textarea>
+      </section>
 
       <section class="group">
         <h3>信号 <span>signal</span></h3>
@@ -926,6 +1038,32 @@ body.idle { cursor: none; }
 
   const PRESET_COLORS = ['#3dff9c', '#7ef9ff', '#ffd166', '#ff6b8a', '#c4a7ff', '#eef4f2'];
 
+  /* --------------------------------------------------------------- presets */
+
+  /* A preset captures the LOOK — everything that decides the picture. The two
+     exceptions are rateMode and renderScale: those describe the machine you
+     happen to be sitting at, and a preset that silently moved someone else's
+     audio engine to 192 kHz would be a bug, not a feature. */
+  const PRESET_KEYS = Object.keys(DEFAULTS).filter((k) => k !== 'rateMode' && k !== 'renderScale');
+  const builtinPreset = (name, over) => ({ name, settings: Object.assign({}, DEFAULTS, over) });
+  const BUILTIN_PRESETS = [
+    builtinPreset('默认', {}),
+    builtinPreset('描边', { windowIdx: 1, persistence: 16 }),              // 1024 samples, 16 %
+    builtinPreset('填充', { windowIdx: 3, persistence: 32, lineWidth: 2.3 }),  // 4096, 32 %
+  ];
+  const BUILTIN_NAMES = new Set(BUILTIN_PRESETS.map((p) => p.name));
+  const PRESET_STORE = 'scope.presets.v1';
+  const EXPORT_KIND = 'oscilloscope-presets';
+
+  let customPresets = [];    // [{name, settings}] — the user's, in insertion order
+  let presetMode = 'auto';   // 'auto' = remember per track | 'manual' = only on click
+  let trackMemory = {};      // { [trackName]: { preset, settings } }
+  let activePreset = null;   // preset the current settings came from, or null
+  let armedDelete = null;    // preset name waiting for a second click
+  let editingPreset = null;  // preset being renamed in the save row
+  let recordTimer = 0;
+  let armTimer = 0;
+
   /* -------------------------------------------------------------------- dom */
 
   const dom = {
@@ -940,6 +1078,8 @@ body.idle { cursor: none; }
     panelSettings: $('panelSettings'), panelList: $('panelList'),
     trackList: $('trackList'), listCount: $('listCount'),
     fileInput: $('fileInput'), toast: $('toast'), swatches: $('swatches'),
+    presetMode: $('presetMode'), presetChips: $('presetChips'), presetStatus: $('presetStatus'),
+    presetRow: $('presetRow'), presetName: $('presetName'), presetText: $('presetText'),
   };
 
   const bctx = dom.bg.getContext('2d');
@@ -1525,6 +1665,7 @@ body.idle { cursor: none; }
       setHint(false);
       needsRedraw = true;
       refSpeed = 0;
+      restoreTrackSettings();   // the demo is remembered like any other "track"
     } else {
       try { demo.merger.disconnect(); } catch (e) { /* not connected */ }
       source = 'media';
@@ -1712,6 +1853,7 @@ body.idle { cursor: none; }
   function loadTrack(i, autoplay) {
     const t = tracks[i];
     if (!t) return;
+    const same = i === curIndex && source === 'media';
     if (source === 'demo') setDemo(false);
     curIndex = i;
     // Build/rebuild the engine at this file's own rate *before* loading, so the
@@ -1726,6 +1868,8 @@ body.idle { cursor: none; }
     document.title = `${t.name} · 示波器音乐播放器`;
     setHint(false);
     renderPlaylist();
+    // Re-selecting the same row must not undo tweaks the user has not saved yet.
+    if (!same) restoreTrackSettings();
     refSpeed = 0;
     agGain = 1;
     scrubTick = 0;
@@ -2214,6 +2358,7 @@ body.idle { cursor: none; }
         if (key === 'windowIdx') { refSpeed = 0; applyAnalyserSize(); }
         if (key === 'burnIn') updateBurnIn(false);
         needsRedraw = true;
+        noteSettingsChanged();
       };
       el.addEventListener('input', onInput);
     }
@@ -2234,6 +2379,7 @@ body.idle { cursor: none; }
         if (out) out.textContent = c.toUpperCase();
         applyAccent(c);
         needsRedraw = true;
+        noteSettingsChanged();
       });
       dom.swatches.appendChild(b);
     }
@@ -2248,6 +2394,7 @@ body.idle { cursor: none; }
         if (key === 'trigger') refSpeed = 0;
         if (key === 'blanking') syncControlsFromState();   // enable/disable the threshold row
         needsRedraw = true;
+        noteSettingsChanged();
       });
     }
 
@@ -2391,6 +2538,8 @@ body.idle { cursor: none; }
     updateBurnIn(true);
     needsRedraw = true;
     settle = 100;
+    activePreset = '默认';      // defaults ARE the 默认 preset, for the keys it covers
+    noteSettingsChanged();
   }
 
   /** One-click low-power preset. The levers are chosen from measurements in
@@ -2427,6 +2576,8 @@ body.idle { cursor: none; }
     refSpeed = 0;
     needsRedraw = true;
     settle = 100;
+    activePreset = null;   // perf mode is a machine setting, not a preset
+    noteSettingsChanged();
     toast(on ? '性能模式：开' : '性能模式：关');
   }
 
@@ -2459,6 +2610,403 @@ body.idle { cursor: none; }
       setTimeout(() => URL.revokeObjectURL(url), 8000);
       toast('已保存 PNG');
     }, 'image/png');
+  }
+
+  /* ---------------------------------------------------------------- presets */
+
+  function storage() {
+    try { return window.localStorage; } catch (e) { return null; }   // file://, private mode
+  }
+
+  function cleanName(v) {
+    return String(v == null ? '' : v).replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 24);
+  }
+
+  /** Snap a number onto its control's own grid. Presets arrive from storage and
+   *  from other people's exports, and a value the slider cannot express would
+   *  make the readout disagree with what is actually rendering — the exact bug
+   *  class this file keeps having to fix. */
+  function snapToControl(key, n) {
+    const el = document.querySelector(`[data-set="${key}"]`);
+    let v = n;
+    if (!el) return v;
+    const min = Number(el.min);
+    const max = Number(el.max);
+    const step = Number(el.step);
+    if (Number.isFinite(step) && step > 0) {
+      const base = Number.isFinite(min) ? min : 0;
+      v = Number((base + Math.round((v - base) / step) * step).toFixed(4));
+    }
+    if (Number.isFinite(min)) v = Math.max(min, v);
+    if (Number.isFinite(max)) v = Math.min(max, v);
+    return v;
+  }
+
+  /** Keep only keys we know, with types the UI can express. */
+  function sanitizeSettings(raw) {
+    const out = {};
+    if (!raw || typeof raw !== 'object') return out;
+    for (const k of PRESET_KEYS) {
+      if (!Object.prototype.hasOwnProperty.call(raw, k)) continue;
+      const ref = DEFAULTS[k];
+      const v = raw[k];
+      if (typeof ref === 'number') {
+        const n = Number(v);
+        if (Number.isFinite(n)) out[k] = snapToControl(k, k === 'windowIdx' ? Math.round(n) : n);
+      } else if (typeof ref === 'boolean') {
+        out[k] = v === true || v === 'true' || v === 1;
+      } else if (k === 'color') {
+        if (typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v)) out[k] = v.toLowerCase();
+      }
+    }
+    return out;
+  }
+
+  function captureSettings() {
+    const out = {};
+    for (const k of PRESET_KEYS) out[k] = S[k];
+    return out;
+  }
+
+  function settingsEqual(a, b) {
+    if (!a || !b) return false;
+    for (const k of PRESET_KEYS) {
+      const x = a[k];
+      const y = b[k];
+      if (typeof x === 'number' && typeof y === 'number') {
+        if (Math.abs(x - y) > 1e-6) return false;
+      } else if (x !== y) return false;
+    }
+    return true;
+  }
+
+  const allPresets = () => BUILTIN_PRESETS.concat(customPresets);
+  const findPreset = (name) => allPresets().find((p) => p.name === name) || null;
+
+  function applySettings(raw) {
+    Object.assign(S, sanitizeSettings(raw));
+    refSpeed = 0;
+    agGain = 1;
+    scrubTick = 0;
+    syncControlsFromState();     // sliders, toggles, colour and the dependent rows
+    applyAnalyserSize();         // the window may have moved
+    needsRedraw = true;
+    settle = 100;
+  }
+
+  function applyPreset(name) {
+    const p = findPreset(name);
+    if (!p) return;
+    applySettings(p.settings);
+    activePreset = name;
+    noteSettingsChanged();
+    renderPresetUI();
+    toast(`预设：${name}`);
+  }
+
+  function currentTrackKey() {
+    if (source === 'demo') return '@demo';
+    const t = tracks[curIndex];
+    return t ? t.name : null;
+  }
+
+  /* Every change is recorded for the track you are looking at, in BOTH modes:
+     manual mode only declines to *apply* it automatically, and keeping the
+     record means switching modes later does not lose anything. */
+  function noteSettingsChanged() {
+    renderPresetStatus();
+    clearTimeout(recordTimer);
+    recordTimer = setTimeout(recordTrackSettings, 400);
+  }
+
+  function recordTrackSettings() {
+    const key = currentTrackKey();
+    if (!key) return;
+    trackMemory[key] = { preset: activePreset, settings: captureSettings() };
+    const keys = Object.keys(trackMemory);
+    if (keys.length > 80) delete trackMemory[keys[0]];   // bound the store
+    savePresets();
+  }
+
+  function restoreTrackSettings() {
+    if (presetMode === 'manual') { renderPresetStatus(); return; }
+    const key = currentTrackKey();
+    const entry = key ? trackMemory[key] : null;
+    if (entry) {
+      applySettings(entry.settings);
+      activePreset = entry.preset && findPreset(entry.preset) ? entry.preset : null;
+    } else {
+      activePreset = null;   // never seen this track: keep whatever is on screen
+    }
+    renderPresetUI();
+  }
+
+  function loadPresets() {
+    const ls = storage();
+    if (!ls) return;
+    let data = null;
+    try { data = JSON.parse(ls.getItem(PRESET_STORE) || 'null'); } catch (e) { data = null; }
+    if (!data || typeof data !== 'object') return;
+    if (data.mode === 'manual' || data.mode === 'auto') presetMode = data.mode;
+    if (Array.isArray(data.custom)) {
+      for (const p of data.custom) {
+        const name = cleanName(p && p.name);
+        const settings = sanitizeSettings(p && p.settings);
+        if (!name || BUILTIN_NAMES.has(name) || !Object.keys(settings).length) continue;
+        if (customPresets.some((c) => c.name === name)) continue;
+        customPresets.push({ name, settings });
+      }
+    }
+    if (data.tracks && typeof data.tracks === 'object') {
+      for (const [key, v] of Object.entries(data.tracks)) {
+        const settings = sanitizeSettings(v && v.settings);
+        if (!Object.keys(settings).length) continue;
+        trackMemory[key] = { preset: typeof v.preset === 'string' ? v.preset : null, settings };
+      }
+    }
+  }
+
+  function savePresets() {
+    const ls = storage();
+    if (!ls) return;
+    try {
+      ls.setItem(PRESET_STORE, JSON.stringify({ mode: presetMode, custom: customPresets, tracks: trackMemory }));
+    } catch (e) { /* quota or blocked — presets stay in memory for this session */ }
+  }
+
+  function uniqueName(base, except) {
+    const taken = (n) => BUILTIN_NAMES.has(n) || customPresets.some((p) => p.name === n && p.name !== except);
+    if (!taken(base)) return base;
+    for (let i = 2; i < 99; i++) if (!taken(`${base} ${i}`)) return `${base} ${i}`;
+    return `${base} ${Date.now()}`;
+  }
+
+  function parseImport(text) {
+    let data = null;
+    try { data = JSON.parse(String(text || '')); } catch (e) { return { error: '不是合法 JSON' }; }
+    const list = Array.isArray(data) ? data
+      : (data && Array.isArray(data.presets)) ? data.presets
+        : (data && data.settings) ? [data] : null;
+    if (!list) return { error: '找不到预设数组' };
+    const out = [];
+    for (const p of list) {
+      if (!p || typeof p !== 'object') continue;
+      const name = cleanName(p.name);
+      const settings = sanitizeSettings(p.settings);
+      if (!name || !Object.keys(settings).length) continue;
+      out.push({ name, settings });
+    }
+    if (!out.length) return { error: '这里没有可用的预设' };
+    return { presets: out };
+  }
+
+  /* ------------------------------------------------------------- preset ui */
+
+  function chipEl(p, custom, current) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    // Highlight only while the settings still ARE that preset: a chip that stays
+    // lit after you drag a slider would be claiming something untrue.
+    const on = activePreset === p.name && settingsEqual(current, p.settings);
+    b.className = 'chip'
+      + (on ? ' active' : '')
+      + (armedDelete === p.name ? ' armed' : '');
+    b.dataset.preset = p.name;
+    b.title = custom ? `${p.name} · 双击改名` : `${p.name}（内置）`;
+    const label = document.createElement('span');
+    label.textContent = armedDelete === p.name ? '删除？' : p.name;
+    b.appendChild(label);
+    if (custom) {
+      const x = document.createElement('span');
+      x.className = 'x';
+      x.textContent = '×';
+      x.title = '删除（再点一次确认）';
+      b.appendChild(x);
+    }
+    return b;
+  }
+
+  function renderPresetUI() {
+    for (const b of dom.presetMode.children) {
+      b.setAttribute('aria-checked', String(b.dataset.mode === presetMode));
+    }
+    const current = captureSettings();
+    dom.presetChips.textContent = '';
+    for (const p of BUILTIN_PRESETS) dom.presetChips.appendChild(chipEl(p, false, current));
+    for (const p of customPresets) dom.presetChips.appendChild(chipEl(p, true, current));
+    renderPresetStatus();
+  }
+
+  /** Cheap enough to run on every input event: only toggles a class. */
+  function refreshChipStates() {
+    const current = captureSettings();
+    for (const b of dom.presetChips.children) {
+      const p = findPreset(b.dataset.preset);
+      b.classList.toggle('active', !!p && activePreset === p.name && settingsEqual(current, p.settings));
+    }
+  }
+
+  function renderPresetStatus() {
+    const where = source === 'demo' ? '演示信号' : (currentTrackKey() || '未加载音频');
+    const p = activePreset ? findPreset(activePreset) : null;
+    const el = dom.presetStatus;
+    refreshChipStates();
+    el.textContent = '';
+    el.appendChild(document.createTextNode(`${where} — `));
+    if (p) {
+      const b = document.createElement('b');
+      b.textContent = p.name;
+      el.appendChild(b);
+      if (!settingsEqual(captureSettings(), p.settings)) el.appendChild(document.createTextNode(' · 已微调'));
+    } else {
+      el.appendChild(document.createTextNode('自定义参数'));
+    }
+    if (presetMode === 'manual') el.appendChild(document.createTextNode(' · 手动'));
+  }
+
+  function onChipClick(ev) {
+    const b = ev.target.closest('.chip');
+    if (!b) return;
+    const name = b.dataset.preset;
+    const custom = customPresets.some((p) => p.name === name);
+    if (ev.target.closest('.x') && custom) {
+      clearTimeout(armTimer);
+      if (armedDelete === name) {
+        armedDelete = null;
+        deletePreset(name);
+      } else {
+        armedDelete = name;
+        armTimer = setTimeout(() => { armedDelete = null; renderPresetUI(); }, 3000);
+        renderPresetUI();
+      }
+      return;
+    }
+    armedDelete = null;
+    applyPreset(name);
+  }
+
+  function deletePreset(name) {
+    const i = customPresets.findIndex((p) => p.name === name);
+    if (i < 0) return;
+    customPresets.splice(i, 1);
+    if (activePreset === name) activePreset = null;
+    for (const k of Object.keys(trackMemory)) {
+      if (trackMemory[k].preset === name) trackMemory[k].preset = null;
+    }
+    savePresets();
+    renderPresetUI();
+    toast(`已删除「${name}」`);
+  }
+
+  function suggestName() {
+    for (let i = 1; i < 99; i++) if (!findPreset(`我的预设 ${i}`)) return `我的预设 ${i}`;
+    return '预设';
+  }
+
+  function openSaveRow(rename) {
+    editingPreset = rename || null;
+    dom.presetRow.hidden = false;
+    dom.presetName.value = rename || suggestName();
+    dom.presetName.focus();
+    dom.presetName.select();
+  }
+
+  function closeSaveRow() {
+    editingPreset = null;
+    dom.presetRow.hidden = true;
+  }
+
+  function commitSave() {
+    const wanted = cleanName(dom.presetName.value) || suggestName();
+    const settings = captureSettings();
+    if (!editingPreset && BUILTIN_NAMES.has(wanted)) {
+      toast('内置预设不能覆盖，换个名字');
+      return;
+    }
+    const name = uniqueName(wanted, editingPreset);
+    const renameFrom = editingPreset;
+    if (renameFrom) {
+      const i = customPresets.findIndex((p) => p.name === renameFrom);
+      if (i >= 0) customPresets[i] = { name, settings };
+      else customPresets.push({ name, settings });
+      if (activePreset === renameFrom) activePreset = name;
+    } else {
+      const dup = customPresets.find((p) => p.name === name);
+      if (dup) dup.settings = settings;              // same name = overwrite
+      else customPresets.push({ name, settings });
+    }
+    activePreset = name;
+    closeSaveRow();
+    savePresets();
+    renderPresetUI();
+    toast(renameFrom && renameFrom !== name ? `已重命名为「${name}」`
+      : renameFrom ? `已更新「${name}」` : `已保存「${name}」`);
+  }
+
+  /* The box stays out of the way until it is needed: the preset group sits at
+     the top of the panel, so an always-empty textarea would push every everyday
+     control further down the scroll for the 1 % of the time it is in use. */
+  function doExport() {
+    dom.presetText.hidden = false;
+    dom.presetText.focus();
+    if (!customPresets.length) {
+      dom.presetText.value = '';
+      toast('还没有自定义预设');
+      return;
+    }
+    dom.presetText.value = JSON.stringify({ kind: EXPORT_KIND, v: 1, presets: customPresets }, null, 1);
+    dom.presetText.select();
+    toast(`已导出 ${customPresets.length} 个预设，复制这段文本即可`);
+  }
+
+  function doImport() {
+    if (dom.presetText.hidden) {
+      dom.presetText.hidden = false;
+      dom.presetText.value = '';
+      dom.presetText.focus();
+      toast('粘贴预设文本，再点一次「导入」');
+      return;
+    }
+    if (!dom.presetText.value.trim()) { toast('先粘贴一段预设文本'); return; }
+    const r = parseImport(dom.presetText.value);
+    if (r.error) { toast(`导入失败：${r.error}`); return; }
+    for (const p of r.presets) customPresets.push({ name: uniqueName(p.name), settings: p.settings });
+    dom.presetText.value = '';
+    dom.presetText.hidden = true;      // done with it — give the panel its space back
+    savePresets();
+    renderPresetUI();
+    toast(`已导入 ${r.presets.length} 个预设`);
+  }
+
+  function setPresetMode(mode) {
+    presetMode = mode === 'manual' ? 'manual' : 'auto';
+    savePresets();
+    renderPresetUI();
+    if (presetMode === 'auto') restoreTrackSettings();   // honour the memory right away
+    toast(presetMode === 'auto' ? '预设：自动（按曲记忆）' : '预设：手动');
+  }
+
+  function initPresets() {
+    loadPresets();
+    dom.presetChips.addEventListener('click', onChipClick);
+    dom.presetChips.addEventListener('dblclick', (ev) => {
+      const b = ev.target.closest('.chip');
+      if (b && customPresets.some((p) => p.name === b.dataset.preset)) openSaveRow(b.dataset.preset);
+    });
+    dom.presetMode.addEventListener('click', (ev) => {
+      const b = ev.target.closest('button[data-mode]');
+      if (b) setPresetMode(b.dataset.mode);
+    });
+    $('btnPresetSave').addEventListener('click', () => openSaveRow(null));
+    $('btnPresetCommit').addEventListener('click', commitSave);
+    $('btnPresetCancel').addEventListener('click', closeSaveRow);
+    $('btnPresetExport').addEventListener('click', doExport);
+    $('btnPresetImport').addEventListener('click', doImport);
+    dom.presetName.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') { ev.preventDefault(); commitSave(); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); closeSaveRow(); }
+    });
+    renderPresetUI();
   }
 
   /* ------------------------------------------------------------- hint/toast */
@@ -2640,6 +3188,7 @@ body.idle { cursor: none; }
     applyAnalyserSize();
     bindAudioEvents(dom.audio);
     bindControls();
+    initPresets();
     bindDragDrop();
     syncControlsFromState();
     updatePerfBadge();
