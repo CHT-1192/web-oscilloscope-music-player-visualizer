@@ -314,10 +314,20 @@ async function httpTests() {
   if (fs.existsSync(fileStandalone)) ok('oscilloscope-standalone.html exists on disk');
   else bad('oscilloscope-standalone.html exists on disk');
 
-  for (const [p, type] of [['/styles.css', 'text/css'], ['/app.js', 'text/javascript']]) {
+  /* The app is ES modules now, so the MIME type is load-bearing: browsers
+     refuse a module served as anything but a JavaScript type, and the failure
+     looks like an empty page rather than an error in this file. */
+  for (const [p, type] of [['/styles.css', 'text/css'], ['/js/main.js', 'text/javascript'], ['/js/core.js', 'text/javascript']]) {
     const r = await get(BASE + p);
     if (r.status === 200 && (r.headers['content-type'] || '').startsWith(type)) ok(`GET ${p}`, r.headers['content-type']);
     else bad(`GET ${p}`, `status ${r.status} type ${r.headers['content-type']}`);
+  }
+
+  const index = (await get(BASE + '/')).body.toString();
+  if (index.includes('<script type="module" src="js/main.js"></script>')) {
+    ok('the page loads the module entry, not a classic script');
+  } else {
+    bad('the page loads the module entry, not a classic script', 'script tag not found');
   }
 
   // range requests — exercised against the LARGEST file, since that is the one

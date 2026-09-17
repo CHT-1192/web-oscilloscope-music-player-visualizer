@@ -1,0 +1,120 @@
+/* ============================================================================
+ *  core.js — the leaves: shorthands, the settings object, DOM refs, toast
+ *
+ *  Nothing here depends on anything else in the app, which is what lets every
+ *  other module import it without a cycle. `S` and `dom` are exported as
+ *  objects on purpose: callers mutate their fields, and a shared object
+ *  reference survives being imported, while a re-exported primitive would not.
+ * ========================================================================== */
+
+/* ------------------------------------------------------------------ utils */
+
+const $ = (id) => document.getElementById(id);
+const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+const TAU = Math.PI * 2;
+
+function fmtBytes(n) {
+  if (!Number.isFinite(n)) return '';
+  const u = ['B', 'KB', 'MB', 'GB'];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return `${n < 10 && i > 0 ? n.toFixed(1) : Math.round(n)} ${u[i]}`;
+}
+function fmtTime(sec) {
+  if (!Number.isFinite(sec) || sec < 0) return '--:--';
+  const t = Math.floor(sec);
+  const m = Math.floor(t / 60);
+  const s = t % 60;
+  if (m >= 60) return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+function fmtHz(hz) {
+  if (!hz) return null;
+  return `${(hz / 1000).toFixed(hz % 1000 ? 1 : 0)} kHz`;
+}
+function stamp() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+/* --------------------------------------------------------------- settings */
+
+/** Analyser window sizes, in samples. Index is what the slider moves over. */
+const WINDOW_CHOICES = [512, 1024, 2048, 4096, 8192, 16384, 32768];
+const MAXN = 32768;          // analyser fftSize — the largest window we can show
+const BUCKETS = 10;          // velocity-blanking brightness levels (bucket 0 = blanked)
+
+/* The defaults are the midpoint of the two shipped recipes (描边 / 填充, see
+   the table in README) — a trade-off, not an optimum. The optimum really does
+   depend on the track; that is what the presets are for.
+   What is NOT a trade-off is the blow-out bound, and that one is measured.
+   Sweeping window x afterglow over the busiest passage of a line-type track,
+   24 % keeps the saturated share at 0.66 % of the ink, whereas 62 % (the old
+   default) pushed it to 5.3 % at 2048 and 12.8 % at 4096 — a picture that has
+   dissolved into a solid mass. 2048 is the largest window that still stays
+   under ~1 %, because a 4096 window already self-overlaps within one frame.
+     窗口 (1 + 3) / 2 = 2 · 余辉 (16 + 32) / 2 = 24 · 线宽 (1.15 + 2.3) / 2 ≈ 1.75 */
+const DEFAULTS = {
+  gainX: 1, gainY: 1, offX: 0, offY: 0,
+  windowIdx: 2,
+  intensity: 0.9, lineWidth: 1.75, persistence: 24, burnIn: 0, residue: 0,
+  blankRatio: 10,
+  color: '#3dff9c',
+  rateMode: 'auto',
+  renderScale: 'auto',
+  blanking: true, trigger: false, autoGain: false, grid: true, beamDot: false,
+};
+const S = Object.assign({}, DEFAULTS);
+const winSize = () => WINDOW_CHOICES[clamp(S.windowIdx | 0, 0, WINDOW_CHOICES.length - 1)];
+
+const PRESET_COLORS = ['#3dff9c', '#7ef9ff', '#ffd166', '#ff6b8a', '#c4a7ff', '#eef4f2'];
+/* -------------------------------------------------------------------- dom */
+
+const dom = {
+  stage: $('stage'), bg: $('bg'), burnin: $('burnin'), trace: $('trace'), audio: $('audio'),
+  hint: $('dropHint'), hintNote: $('hintNote'),
+  trackTitle: $('trackTitle'), trackSub: $('trackSub'),
+  seek: $('seek'), tCur: $('tCur'), tDur: $('tDur'),
+  volume: $('volume'), rate: $('rate'),
+  btnPlay: $('btnPlay'), btnPrev: $('btnPrev'), btnNext: $('btnNext'),
+  btnSettings: $('btnSettings'), btnList: $('btnList'), btnDemo: $('btnDemo'),
+  btnShot: $('btnShot'), btnFull: $('btnFull'), btnReset: $('btnReset'),
+  panelSettings: $('panelSettings'), panelList: $('panelList'),
+  trackList: $('trackList'), listCount: $('listCount'),
+  fileInput: $('fileInput'), toast: $('toast'), swatches: $('swatches'),
+  presetMode: $('presetMode'), presetChips: $('presetChips'), presetStatus: $('presetStatus'),
+  presetRow: $('presetRow'), presetName: $('presetName'), presetText: $('presetText'),
+};
+/* ------------------------------------------------------------- hint/toast */
+
+let toastTimer = 0;
+function toast(msg) {
+  dom.toast.textContent = msg;
+  dom.toast.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => dom.toast.classList.remove('show'), 2600);
+}
+
+function setHint(show) {
+  dom.hint.classList.toggle('hidden', !show);
+}
+
+export {
+  $,
+  clamp,
+  TAU,
+  fmtBytes,
+  fmtTime,
+  fmtHz,
+  stamp,
+  WINDOW_CHOICES,
+  MAXN,
+  BUCKETS,
+  DEFAULTS,
+  S,
+  winSize,
+  PRESET_COLORS,
+  dom,
+  toast,
+  setHint,
+};

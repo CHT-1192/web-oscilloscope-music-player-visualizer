@@ -191,7 +191,7 @@ oscillofun.flac — 描边 · 已微调
 实测：窗口 32768 → 1024 把单帧从 **1.49 ms 降到 0.08 ms**；「渲染缩放 50%」
 反而略慢（同样的路径挤进更少的像素，单位像素覆盖更密）。弱机按 `O` 开性能模式。
 
-其余细节都在代码里：`public/app.js` 和 `test/bench.js` 顶部都有大段注释说明。
+其余细节都在代码里：`public/js/` 下的各个模块和 `test/bench.js` 顶部都有大段注释说明。
 
 ---
 
@@ -199,9 +199,9 @@ oscillofun.flac — 描边 · 已微调
 
 ```
 server.js                       零依赖 Node 服务器（静态 + 播放列表 API + Range 流式传输）
-public/app.js                   渲染内核 + 播放器（两个版本共用）
+public/js/*.js                  ES 模块（服务器版按模块加载，单文件版由构建脚本内联）
 public/index.html  styles.css
-build-standalone.js             生成单文件版
+build-standalone.js             模块内联器 + 生成单文件版
 oscilloscope-standalone.html    单文件版（生成物，但要提交）
 docs/                           预览图
 test/verify.js                  93 项端到端验证
