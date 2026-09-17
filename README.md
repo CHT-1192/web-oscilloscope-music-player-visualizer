@@ -211,7 +211,7 @@ public/index.html  styles.css
 build-standalone.js             模块内联器 + 生成单文件版
 oscilloscope-standalone.html    单文件版（生成物，但要提交）
 docs/                           预览图
-test/verify.js                  95 项端到端验证
+test/verify.js                  96 项端到端验证
 test/bench.js                   性能基准
 LICENSE                         Apache License 2.0（取自 apache.org 原文，仅填入版权行）
 ```

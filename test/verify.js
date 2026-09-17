@@ -1290,6 +1290,10 @@ async function presetTests(pw) {
   const text = await page.inputValue('#presetText');
   let parsed = null;
   try { parsed = JSON.parse(text); } catch (e) { parsed = null; }
+  const secondLine = (text.split('\n')[1] || '');
+  if (/^ {2}\S/.test(secondLine)) ok('the exported JSON is indented in twos', JSON.stringify(secondLine.trim().slice(0, 30)));
+  else bad('the exported JSON is indented in twos', JSON.stringify(secondLine));
+
   if (parsed && parsed.kind === 'oscilloscope-presets' && parsed.presets.length === 1 && parsed.presets[0].name === '我的描边') {
     ok('export produces portable text', `${text.length} bytes, kind ${parsed.kind}`);
   } else {

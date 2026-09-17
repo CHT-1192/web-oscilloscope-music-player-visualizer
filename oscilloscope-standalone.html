@@ -2696,7 +2696,9 @@ function doExport() {
     toast('还没有自定义预设');
     return;
   }
-  dom.presetText.value = JSON.stringify({ kind: EXPORT_KIND, v: 1, presets: customPresets }, null, 1);
+  /* 2 spaces: this text is meant to be read and hand-edited, and the whole
+     project indents in twos. (It was 1 for a while, which looked like a typo.) */
+  dom.presetText.value = JSON.stringify({ kind: EXPORT_KIND, v: 1, presets: customPresets }, null, 2);
   dom.presetText.select();
   toast(`已导出 ${customPresets.length} 个预设，复制这段文本即可`);
 }
