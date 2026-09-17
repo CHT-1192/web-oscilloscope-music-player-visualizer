@@ -99,7 +99,7 @@ async function loadServerTracks() {
 }
 /** The track currently loaded, for anything that needs to describe it. */
 const currentTrack = () => tracks[curIndex] || null;
-const AUDIO_RE = /\.(wav|wave|flac|mp3|m4a|aac|ogg|oga|opus|weba|webm|aif|aiff|caf)$/i;
+const AUDIO_RE = /\.(wav|wave|flac|mp3|m4a|aac|ogg|oga|opus|weba|webm|aif|aiff|aifc|caf)$/i;
 /* Read the native sample rate straight out of the file header (a small
    leading slice — nothing is decoded). Needed so a local file can get an
    engine at its own rate instead of being resampled into the device rate.
@@ -191,6 +191,110 @@ async function probeNativeRate(file) {
       }
       if (rate) return { format: 'M4A', codec, rate, channels: channels || 2, bits };
     }
+    // ---- AIFF / AIFF-C. The rate is an 80-bit IEEE extended float, never a
+    // fixed-width integer: 1 sign bit, 15 exponent bits, 64-bit mantissa with
+    // an explicit integer bit.
+    if (tag(0) === 'FORM' && (tag(8) === 'AIFF' || tag(8) === 'AIFC')) {
+      const extended = (o) => {
+        const exp = ((head[o] & 0x7f) << 8) | head[o + 1];
+        if (!exp) return 0;
+        let mant = 0;
+        for (let i = 2; i < 10; i++) mant = mant * 256 + head[o + i];
+        return Math.round(mant * Math.pow(2, exp - 16383 - 63));
+      };
+      const isC = tag(8) === 'AIFC';
+      let off = 12;
+      while (off + 8 <= head.length) {
+        const id = tag(off);
+        const size = dv.getUint32(off + 4, false);
+        if (id === 'COMM' && off + 26 <= head.length) {
+          const channels = dv.getUint16(off + 8, false);
+          const frames = dv.getUint32(off + 10, false);
+          const bits = dv.getUint16(off + 14, false);
+          const rate = extended(off + 16);
+          if (rate && channels) {
+            const ctag = isC && off + 30 <= head.length ? tag(off + 26) : 'PCM';
+            return {
+              format: isC ? 'AIFC' : 'AIFF',
+              codec: ['NONE', 'twos', 'sowt'].includes(ctag) ? 'PCM' : ctag,
+              rate,
+              channels,
+              bits,
+              duration: frames > 0 ? frames / rate : null,
+            };
+          }
+          break;
+        }
+        off += 8 + size + (size % 2);        // chunks are word aligned
+      }
+    }
+    // ---- CAF: one desc chunk, big-endian, behind a 64-bit chunk size
+    if (tag(0) === 'caff') {
+      let off = 8;
+      let desc = null;
+      let dataSize = null;
+      while (off + 12 <= head.length) {
+        const id = tag(off);
+        const size = dv.getUint32(off + 4, false) * 4294967296 + dv.getUint32(off + 8, false);
+        if (id === 'desc' && off + 44 <= head.length) {
+          desc = {
+            rate: Math.round(dv.getFloat64(off + 12, false)),
+            fmt: tag(off + 20),
+            bytesPerPacket: dv.getUint32(off + 28, false),
+            channels: dv.getUint32(off + 36, false),
+            bits: dv.getUint32(off + 40, false),
+          };
+        } else if (id === 'data') {
+          dataSize = size;
+          break;
+        }
+        off += 12 + size;
+      }
+      if (desc && desc.rate && desc.channels) {
+        const pcm = desc.fmt === 'lpcm';
+        return {
+          format: 'CAF',
+          codec: pcm ? 'PCM' : desc.fmt,
+          rate: desc.rate,
+          channels: desc.channels,
+          bits: pcm ? desc.bits : 0,
+          duration: dataSize != null && desc.bytesPerPacket > 0
+            ? dataSize / desc.bytesPerPacket / desc.rate : null,
+        };
+      }
+    }
+    // ---- Ogg: the first page payload names the codec. Opus always decodes at
+    // 48 kHz whatever the source was, and that is what the analyser sees. The
+    // duration is the granule position of the LAST page, so this one needs the
+    // tail even though the codec is announced in the first bytes.
+    if (tag(0) === 'OggS' && head.length > 40) {
+      const body = 27 + head[26];
+      if (body + 16 <= head.length) {
+        let rate = 0;
+        let channels = 0;
+        let codec = null;
+        if (tag(body + 1) === 'vorb') { rate = dv.getUint32(body + 12, true); channels = head[body + 11]; codec = 'Vorbis'; }
+        else if (tag(body) === 'Opus') { rate = 48000; channels = head[body + 9]; codec = 'Opus'; }
+        if (rate && channels) {
+          let duration = null;
+          try {
+            const tail = file.size > head.length
+              ? new Uint8Array(await file.slice(Math.max(0, file.size - 65536)).arrayBuffer())
+              : head;
+            let at = -1;
+            for (let i = tail.length - 4; i >= 0; i--) {
+              if (tail[i] === 0x4f && tail[i + 1] === 0x67 && tail[i + 2] === 0x67 && tail[i + 3] === 0x53) { at = i; break; }
+            }
+            if (at >= 0 && at + 14 <= tail.length) {
+              let granule = 0;
+              for (let i = 7; i >= 0; i--) granule = granule * 256 + tail[at + 6 + i];   // little endian
+              if (granule > 0) duration = granule / rate;
+            }
+          } catch (e) { /* tail unreadable — the rate is what matters */ }
+          return { format: codec === 'Opus' ? 'OPUS' : 'OGG', codec, rate, channels, bits: 0, duration };
+        }
+      }
+    }
     // ---- MP3 (first MPEG frame header)
     const scan = Math.min(head.length - 4, 65536);
     for (let i = 0; i < scan; i++) {
@@ -201,7 +305,7 @@ async function probeNativeRate(file) {
       const table = ver === 3 ? [44100, 48000, 32000]
         : ver === 2 ? [22050, 24000, 16000]
           : [11025, 12000, 8000];
-      return { format: 'MP3', rate: table[srIdx], channels: ((head[i + 3] >> 6) & 3) === 3 ? 1 : 2, bits: 16 };
+      return { format: 'MP3', codec: 'MP3', rate: table[srIdx], channels: ((head[i + 3] >> 6) & 3) === 3 ? 1 : 2, bits: 0 };
     }
   } catch (err) { /* unreadable header — fall back to the device rate */ }
   return null;
