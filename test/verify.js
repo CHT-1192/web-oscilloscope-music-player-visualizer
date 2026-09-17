@@ -1580,32 +1580,48 @@ async function resampleTests(pw) {
 
 /* -------------------------------------------------------------------- main */
 
+/* `--only=presets` runs just the sections whose key matches, so iterating on
+   one feature costs seconds instead of a full pass. Section keys: port, http,
+   render, presets, resample, standalone. A filtered run says so in the summary
+   — a partial result must never be able to pass itself off as a full one. */
+const ONLY = (() => {
+  const eq = process.argv.find((a) => a.startsWith('--only='));
+  const i = process.argv.indexOf('--only');
+  const raw = eq ? eq.slice('--only='.length) : (i >= 0 ? process.argv[i + 1] : '');
+  return String(raw || '').trim().toLowerCase();
+})();
+const wants = (key) => !ONLY || key.includes(ONLY) || ONLY.includes(key);
+
 (async () => {
   fs.mkdirSync(SHOTS, { recursive: true });
   console.log(`\n\x1b[1m◉ oscilloscope music player — verification\x1b[0m  \x1b[2m(node ${process.version})\x1b[0m`);
 
   const server = await startServer();
   try {
-    defaultPortTests();
-    await portRetryTest();
-    await httpTests();
+    if (wants('port')) {
+      defaultPortTests();
+      await portRetryTest();
+    }
+    if (wants('http')) await httpTests();
 
-    const pw = loadPlaywright();
-    if (!pw) {
+    const browser = ['render', 'presets', 'resample', 'standalone'].filter(wants);
+    const pw = browser.length ? loadPlaywright() : null;
+    if (browser.length && !pw) {
       section('Render layer');
       console.log('  \x1b[33m•\x1b[0m Playwright not found — skipping browser checks.');
       console.log('    \x1b[2minstall with: npm i -g playwright\x1b[0m');
-    } else {
-      await renderTests(pw);
-      await presetTests(pw);
-      await resampleTests(pw);
-      await standaloneTests(pw);
+    } else if (pw) {
+      if (wants('render')) await renderTests(pw);
+      if (wants('presets')) await presetTests(pw);
+      if (wants('resample')) await resampleTests(pw);
+      if (wants('standalone')) await standaloneTests(pw);
     }
   } finally {
     server.child.kill('SIGKILL');
   }
 
-  console.log(`\n\x1b[1mresult\x1b[0m  \x1b[32m${pass} passed\x1b[0m` + (fail ? `, \x1b[31m${fail} failed\x1b[0m` : ''));
+  console.log(`\n\x1b[1mresult\x1b[0m  \x1b[32m${pass} passed\x1b[0m` + (fail ? `, \x1b[31m${fail} failed\x1b[0m` : '')
+    + (ONLY ? `  \x1b[33m(filtered: --only=${ONLY} — this is NOT a full-suite result)\x1b[0m` : ''));
   if (fail) {
     console.log('\n' + failures.map((f) => '  \x1b[31m✗\x1b[0m ' + f).join('\n'));
   }
