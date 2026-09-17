@@ -446,7 +446,13 @@ const SYNTH = `
     AnalyserNode.prototype.getFloatTimeDomainData = function (arr) {
       if (!window.__synthOn) return origFloat.call(this, arr);
       const ch = this.__ch === 1 ? 1 : 0;
-      const P = 4096;
+      /* The renderer draws the FIRST winSize() samples of an analyser buffer
+         that is 2 x winSize long, so one period has to fit in half the array.
+         Hard-coding 4096 here quietly made the whole synthetic suite depend on
+         the default window: at a 2048-sample window the retrace (the last 0.5 %
+         of the period) fell outside the drawn half and every measurement went
+         to zero. Tie the period to the buffer instead. */
+      const P = arr.length / 2;
       for (let i = 0; i < arr.length; i++) {
         const p = window.__synthPoint((i % P) / P);
         arr[i] = ch === 0 ? p[0] : p[1];
@@ -1216,7 +1222,10 @@ async function presetTests(pw) {
   await clickChip('我的描边');
   await page.waitForTimeout(400);
   const restored = await out('lineWidth');
-  if (afterReload.some((c) => c.startsWith('我的描边')) && defaulted === '1.15 px' && restored === '2.75 px') {
+  /* Compare against whatever the app's own default is, rather than a number
+     copied out of DEFAULTS — that copy silently stopped being true the moment
+     the defaults moved, and the failure looked like a preset bug. */
+  if (afterReload.some((c) => c.startsWith('我的描边')) && defaulted !== '2.75 px' && restored === '2.75 px') {
     ok('a custom preset survives a reload and restores exactly', `${defaulted} → ${restored}`);
   } else {
     bad('a custom preset survives a reload and restores exactly', `${afterReload.join(' ')} | ${defaulted} → ${restored}`);
