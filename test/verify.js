@@ -33,12 +33,28 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 const { spawn, execSync } = require('node:child_process');
 
 const ROOT = path.join(__dirname, '..');
 const SHOTS = path.join(__dirname, 'shots');
-const PORT = 8000 + (process.pid % 900);
-const BASE = `http://127.0.0.1:${PORT}`;
+/* Allocated, not guessed. `8000 + pid % 900` could collide with a server left
+   behind by an earlier run, and the failure was nasty: the harness then talked
+   to that STALE server, which answered /api/health happily and reported the
+   previous build's parses — so a real regression looked like a flaky value. */
+let PORT = 0;
+let BASE = '';
+async function pickPort() {
+  const net = require('node:net');
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.on('error', reject);
+    srv.listen(0, '127.0.0.1', () => {
+      const { port } = srv.address();
+      srv.close(() => resolve(port));
+    });
+  });
+}
 
 let pass = 0;
 let fail = 0;
@@ -260,6 +276,19 @@ async function portRetryTest() {
 async function httpTests() {
   section('HTTP layer');
 
+  /* An MP4-family fixture, so the container that hides its rate in a box tree —
+     usually at the far end of the file — is always covered, not only when the
+     author happens to have an .m4a lying around. Written into the project root
+     because that is what the server scans; removed again at the end. */
+  const m4aFixture = 'probe-fixture.m4a';
+  const m4aPath = path.join(ROOT, m4aFixture);
+  let madeFixture = false;
+  try {
+    execSync('ffmpeg -v error -y -f lavfi -i "sine=frequency=440:duration=1:sample_rate=44100" '
+      + `-ac 2 -c:a aac "${m4aPath}"`, { stdio: 'ignore' });
+    madeFixture = true;
+  } catch { /* no ffmpeg — the cross-check below skips for the same reason */ }
+
   const tracks = JSON.parse((await get(`${BASE}/api/tracks`)).body.toString());
   const names = tracks.tracks.map((t) => t.name);
   if (tracks.tracks.length >= 1) ok('GET /api/tracks', `${names.join(', ')}`);
@@ -280,8 +309,9 @@ async function httpTests() {
       if (t.sampleRate !== ref.sampleRate) problems.push(`rate ${t.sampleRate} vs ${ref.sampleRate}`);
       if (t.channels !== ref.channels) problems.push(`channels ${t.channels} vs ${ref.channels}`);
       if (ref.bits && t.bits !== ref.bits) problems.push(`bits ${t.bits} vs ${ref.bits}`);
-      if (ref.duration && Math.abs(t.duration - ref.duration) > 0.5) {
-        problems.push(`duration ${t.duration.toFixed(2)} vs ${ref.duration.toFixed(2)}`);
+      if (ref.duration && (!t.duration || Math.abs(t.duration - ref.duration) > 0.5)) {
+        const got = t.duration == null ? 'null' : t.duration.toFixed(2);
+        problems.push(`duration ${got} vs ${ref.duration.toFixed(2)}`);
       }
       if (problems.length) bad(`header parse: ${t.name}`, problems.join(', '));
       else {
@@ -297,6 +327,24 @@ async function httpTests() {
     ok('all FLACs report a usable rate/channels/duration');
   } else if (flacs.length) {
     bad('all FLACs report a usable rate/channels/duration', JSON.stringify(flacs.map((t) => t.name)));
+  }
+
+  /* The MP4 probe specifically. Without it an .m4a gets no rate at all, which
+     silently costs the project's whole point: the engine falls back to the
+     device rate and the analysis path resamples. */
+  const mp4 = tracks.tracks.find((t) => t.name === m4aFixture);
+  if (madeFixture) {
+    /* bits must stay null for a lossy codec: reporting 16 would claim the
+       source was 16-bit, which nothing in the container says. */
+    if (mp4 && mp4.sampleRate === 44100 && mp4.channels === 2 && mp4.codec === 'AAC'
+      && mp4.duration > 0.5 && !mp4.bits) {
+      ok('MP4 sample entry yields rate/channels/codec/duration',
+        `${mp4.sampleRate} Hz · ${mp4.channels}ch · ${mp4.codec} · no bit depth claimed · ${mp4.durationText}`);
+    } else {
+      bad('MP4 sample entry yields rate/channels/codec/duration', JSON.stringify(mp4 || null));
+    }
+  } else {
+    ok('MP4 sample entry yields rate/channels/codec/duration', 'skipped — no ffmpeg to build a fixture');
   }
 
   const page = await get(`${BASE}/`);
@@ -377,6 +425,11 @@ async function httpTests() {
   const post = await get(`${BASE}/`, { method: 'POST' });
   if (post.status === 405) ok('POST rejected', '405');
   else bad('POST rejected', String(post.status));
+
+  // leave the project root as it was found
+  if (madeFixture) {
+    try { fs.unlinkSync(m4aPath); } catch { /* already gone */ }
+  }
 }
 
 /* ------------------------------------------------------------ render tests */
@@ -1131,6 +1184,40 @@ async function standaloneTests(pw) {
     bad('presets work in the single-file edition too', JSON.stringify(presetOnFile));
   }
 
+  /* The local-file probe in playlist.js shares no code with the server's parser,
+     and only runs for a dragged-in or picked file. ALAC is the case worth
+     pinning: its rate lives in a 36-byte codec box whose fields the generic
+     sample entry cannot express (16.16 fixed point caps at 65535 Hz), and this
+     browser will then refuse to DECODE the file — but the rate still has to be
+     read, because that is what decides whether the analysis path resamples. */
+  let alacFile = null;
+  try {
+    alacFile = path.join(os.tmpdir(), 'scope-probe-alac.m4a');
+    execSync('ffmpeg -v error -y -f lavfi -i "sine=frequency=440:duration=1:sample_rate=44100" '
+      + `-ac 2 -c:a alac "${alacFile}"`, { stdio: 'ignore' });
+  } catch { alacFile = null; }
+
+  if (alacFile) {
+    await page.setInputFiles('#fileInput', alacFile);
+    await page.waitForTimeout(2500);
+    const localProbe = await page.evaluate(() => {
+      const s = window.__scope.state;
+      return {
+        rate: s.sourceRate,
+        engine: s.engineRate,
+        meta: (document.querySelector('.track.active .meta') || {}).textContent || '',
+      };
+    });
+    if (localProbe.rate === 44100 && localProbe.engine === 44100 && /ALAC/.test(localProbe.meta)) {
+      ok('a picked ALAC file is measured at its own rate', `${localProbe.rate} Hz · ${localProbe.meta.trim()}`);
+    } else {
+      bad('a picked ALAC file is measured at its own rate', JSON.stringify(localProbe));
+    }
+    try { fs.unlinkSync(alacFile); } catch { /* already gone */ }
+  } else {
+    ok('a picked ALAC file is measured at its own rate', 'skipped — no ffmpeg to build a fixture');
+  }
+
   await page.screenshot({ path: path.join(SHOTS, 'standalone-file-protocol.png') });
   await browser.close();
 }
@@ -1609,6 +1696,9 @@ const wants = (key) => !ONLY || key.includes(ONLY) || ONLY.includes(key);
 (async () => {
   fs.mkdirSync(SHOTS, { recursive: true });
   console.log(`\n\x1b[1m◉ oscilloscope music player — verification\x1b[0m  \x1b[2m(node ${process.version})\x1b[0m`);
+
+  PORT = await pickPort();
+  BASE = `http://127.0.0.1:${PORT}`;
 
   const server = await startServer();
   try {

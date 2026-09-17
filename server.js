@@ -134,8 +134,14 @@ function fmtTime(sec) {
 
 /* ------------------------------------------------- audio header inspection */
 /* Enough parsing to show duration / sample rate / channels in the playlist
-   without decoding a single audio frame. WAV and FLAC only; anything else
-   simply reports nothing. */
+   without decoding a single audio frame: WAV, FLAC and the MP4 family (m4a —
+   AAC or ALAC). Others report nothing, and the app then runs at the device
+   rate, which means resampling.
+
+   Why bother for a container whose codec the browser may refuse anyway: the
+   sample rate is what decides whether the ANALYSIS path resamples, and that is
+   this project's whole premise. A browser that cannot decode ALAC still cannot,
+   but a browser that can (Safari) then gets it at its native rate. */
 
 function readBitsBE(buf, bitOffset, bitCount) {
   let out = 0n;
@@ -197,6 +203,75 @@ function probeFlac(buf) {
   };
 }
 
+/** mp4 / m4a / mov. The rate, channel count and bit depth live in the audio
+ *  sample entry inside moov > trak > mdia > minf > stbl > stsd, and the duration
+ *  in mvhd. Unlike WAV and FLAC there is no fixed header: moov is often at the
+ *  END of the file (anything written mdat-first, which is ffmpeg's default), so
+ *  the caller hands us a tail slice as well when the head does not contain it.
+ *
+ *  For ALAC the generic sample-entry fields are not enough — the rate there is
+ *  16.16 fixed point (nothing above 65535 Hz fits) and the depth field is only a
+ *  hint. The codec's own 36-byte config box carries the truth, so it wins. */
+function probeMp4(head, tail) {
+  if (head.length < 12 || head.toString('latin1', 4, 8) !== 'ftyp') return null;
+  const chunks = tail && tail.length ? [head, tail] : [head];
+  const out = { sampleRate: 0, channels: 0, bits: 0, codec: null, duration: null };
+
+  for (const buf of chunks) {
+    const find = (s, from) => buf.indexOf(s, from || 0, 'latin1');
+
+    // ALAC codec-specific config:
+    // [size=36]['alac'][ver/flags][frameLength][compatibleVersion][bitDepth]
+    // [pb][mb][kb][numChannels][maxRun][maxFrameBytes][avgBitRate][sampleRate]
+    for (let i = find('alac'); i >= 4 && i + 32 <= buf.length; i = find('alac', i + 1)) {
+      if (buf.readUInt32BE(i - 4) !== 36) continue;
+      out.codec = 'ALAC';
+      out.bits = buf[i + 13];
+      out.channels = buf[i + 17];
+      out.sampleRate = buf.readUInt32BE(i + 28);
+      break;
+    }
+
+    // Generic audio sample entry:
+    // [size][4cc][reserved 6][dataRefIdx 2][version 2][revision 2][vendor 4]
+    // [channels 2][sampleSize 2][compressionId 2][packetSize 2][rate 16.16]
+    if (!out.sampleRate) {
+      for (const cc of ['mp4a', 'alac']) {
+        for (let i = find(cc); i >= 4 && i + 32 <= buf.length; i = find(cc, i + 1)) {
+          const clean = buf.readUInt32BE(i + 4) === 0 && buf.readUInt16BE(i + 8) === 0;
+          const rate = buf.readUInt32BE(i + 28) >>> 16;
+          const ch = buf.readUInt16BE(i + 20);
+          if (!clean || rate < 8000 || rate > 384000 || ch < 1 || ch > 8) continue;
+          out.codec = cc === 'mp4a' ? 'AAC' : 'ALAC';
+          out.sampleRate = rate;
+          out.channels = ch;
+          // "bit depth" is only meaningful for the lossless one; reporting 16
+          // for AAC would imply the source was 16-bit, which nothing says.
+          if (cc === 'alac') out.bits = out.bits || buf.readUInt16BE(i + 22);
+          break;
+        }
+        if (out.sampleRate) break;
+      }
+    }
+
+    // mvhd: [ver/flags][created][modified][timescale][duration] — version 1
+    // widens the last four to 64 bits
+    const mi = find('mvhd');
+    if (out.duration == null && mi >= 0) {
+      const v = buf[mi + 4];
+      const ts = v === 1 ? buf.readUInt32BE(mi + 24) : buf.readUInt32BE(mi + 16);
+      const dur = v === 1 ? Number(buf.readBigUInt64BE(mi + 28)) : buf.readUInt32BE(mi + 20);
+      if (ts > 0 && dur > 0) out.duration = dur / ts;
+    }
+
+    if (out.sampleRate && out.duration != null) break;
+  }
+
+  if (!out.sampleRate) return null;
+  if (!out.channels) out.channels = 2;
+  return out;
+}
+
 async function probeAudio(absPath, size) {
   let fh = null;
   try {
@@ -205,7 +280,20 @@ async function probeAudio(absPath, size) {
     const buf = Buffer.alloc(len);
     const { bytesRead } = await fh.read(buf, 0, len, 0);
     const head = buf.subarray(0, bytesRead);
-    return probeWav(head) || probeFlac(head) || null;
+    const direct = probeWav(head) || probeFlac(head);
+    if (direct) return direct;
+
+    if (head.length >= 12 && head.toString('latin1', 4, 8) === 'ftyp') {
+      let tail = null;
+      if (head.indexOf('moov', 0, 'latin1') < 0 && size > head.length) {
+        const tailLen = Math.min(size - head.length, 1024 * 1024);
+        const tb = Buffer.alloc(tailLen);
+        const { bytesRead: got } = await fh.read(tb, 0, tailLen, size - tailLen);
+        tail = tb.subarray(0, got);
+      }
+      return probeMp4(head, tail);
+    }
+    return null;
   } catch {
     return null;
   } finally {
@@ -246,9 +334,10 @@ async function scanTracks() {
         sizeText: fmtBytes(st.size),
         mtime: st.mtimeMs,
         format: path.extname(e.name).slice(1).toUpperCase(),
+        codec: info?.codec ?? null,
         sampleRate: info?.sampleRate ?? null,
         channels: info?.channels ?? null,
-        bits: info?.bits ?? null,
+        bits: info?.bits || null,   // 0 means "not applicable", not "zero bits"
         duration: info?.duration ?? null,
         durationText: fmtTime(info?.duration),
       });

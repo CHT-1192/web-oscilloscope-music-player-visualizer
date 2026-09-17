@@ -44,7 +44,7 @@
 ```bash
 node server.js --open      # 打开 http://127.0.0.1:10240
 node server.js -p 8080     # 换端口（被占用会自动 +1 重试；也可用环境变量 PORT）
-node test/verify.js        # 96 项端到端验证
+node test/verify.js        # 99 项端到端验证
 node test/bench.js         # 性能基准
 node build-standalone.js   # 改完 public/ 后重新生成单文件版
 ```
@@ -211,7 +211,7 @@ public/index.html  styles.css
 build-standalone.js             模块内联器 + 生成单文件版
 oscilloscope-standalone.html    单文件版（生成物，但要提交）
 docs/                           预览图
-test/verify.js                  96 项端到端验证
+test/verify.js                  99 项端到端验证
 test/bench.js                   性能基准
 LICENSE                         Apache License 2.0（取自 apache.org 原文，仅填入版权行）
 ```
@@ -234,6 +234,14 @@ LICENSE                         Apache License 2.0（取自 apache.org 原文，
 
 - **单文件版在 `file://` 下不能自动列目录** —— 浏览器安全限制，拖进去或点「选择文件」。
 - **FLAC 播不了**说明该浏览器缺解码器，先转 WAV。
+- **ALAC 在 Chrome / Chromium 里播不了** —— 不是文件的问题，是这些浏览器**根本没有
+  ALAC 解码器**（`canPlayType('audio/mp4; codecs="alac"')` 返回空字符串）。Safari 可以。
+  界面会直接说这句话，不会含糊成"无法解码"。
+- **采样率是从文件头读的，不靠解码**：WAV / FLAC / MP4 系列（`m4a`，含 AAC 与 ALAC）。
+  MP4 的采样率藏在 box 树里，而且 `moov` 常常在**文件末尾**（mdat 在前），所以探测会补读一段
+  尾部；ALAC 还多一层——通用 sample entry 的采样率是 16.16 定点，**装不下 65535 Hz 以上**，
+  真正的值在那个 36 字节的 codec box 里。读不出采样率的格式（mp3/ogg/opus…）会退回设备
+  采样率，也就是**会被重采样** —— 这是设计上的取舍，不是 bug。
 - 270 MB 的 FLAC 不会卡：走 `<audio>` 流式解码 + 服务器 Range，不整文件进内存
   （`decodeAudioData` 才会吃掉上 GB）。
 - 「余辉」拉到 0 会闪（每帧全清，只画一个片段），40% 以上才累积得出完整画面。

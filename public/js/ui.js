@@ -225,6 +225,14 @@ function bindAudioEvents(el) {
   el.addEventListener('error', () => {
     if (!el.src) return;
     const code = el.error ? el.error.code : 0;
+    const t = playlist.currentTrack();
+    /* Chromium ships no ALAC decoder at all — canPlayType returns the empty
+       string — so "cannot decode" is true but useless. The file is fine; the
+       browser is not, and Safari does decode it. Name the codec. */
+    if (code === 4 && t && t.codec === 'ALAC') {
+      toast('此浏览器不支持 ALAC（Safari 可以）');
+      return;
+    }
     toast(code === 4 ? '浏览器无法解码此文件' : '音频加载失败');
   });
   el.addEventListener('seeking', () => { flags.redraw = true; });

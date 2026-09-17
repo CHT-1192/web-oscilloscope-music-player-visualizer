@@ -78,8 +78,10 @@ async function loadServerTracks() {
       url: t.url,
       blob: false,
       sampleRate: t.sampleRate || 0,
+      codec: t.codec || null,
       meta: [
         t.format,
+        t.codec,
         t.sampleRate ? `${fmtHz(t.sampleRate)}` : null,
         t.bits ? `${t.bits}-bit` : null,
         t.channels === 2 ? '立体声' : t.channels ? `${t.channels}ch` : null,
@@ -95,6 +97,8 @@ async function loadServerTracks() {
     return false;   // standalone / file:// — the file picker takes over
   }
 }
+/** The track currently loaded, for anything that needs to describe it. */
+const currentTrack = () => tracks[curIndex] || null;
 const AUDIO_RE = /\.(wav|wave|flac|mp3|m4a|aac|ogg|oga|opus|weba|webm|aif|aiff|caf)$/i;
 /* Read the native sample rate straight out of the file header (a small
    leading slice — nothing is decoded). Needed so a local file can get an
@@ -133,6 +137,60 @@ async function probeNativeRate(file) {
       };
       return { format: 'FLAC', rate: bits(80, 20), channels: bits(100, 3) + 1, bits: bits(103, 5) + 1 };
     }
+    // ---- MP4 family (m4a/mp4: AAC, ALAC). Checked BEFORE the MP3 scan: an
+    // mdat full of compressed audio looks exactly like a run of frame headers,
+    // and scanning it first produced bogus rates for m4a files.
+    if (tag(4) === 'ftyp') {
+      const u16 = (buf, o) => (buf[o] << 8 | buf[o + 1]) >>> 0;
+      const u32 = (buf, o) => ((buf[o] << 24) | (buf[o + 1] << 16) | (buf[o + 2] << 8) | buf[o + 3]) >>> 0;
+      const findIn = (buf, s) => {
+        const c = [s.charCodeAt(0), s.charCodeAt(1), s.charCodeAt(2), s.charCodeAt(3)];
+        for (let i = 0; i + 4 <= buf.length; i++) {
+          if (buf[i] === c[0] && buf[i + 1] === c[1] && buf[i + 2] === c[2] && buf[i + 3] === c[3]) return i;
+        }
+        return -1;
+      };
+      /* moov is usually at the far end (written mdat-first), and that is where
+         the sample entry and mvhd live, so pull a tail slice when the head has
+         no moov. Nothing is decoded — this is a byte scan. */
+      const chunks = [head];
+      if (findIn(head, 'moov') < 0 && file.size > head.length) {
+        const tailLen = Math.min(file.size - head.length, 1048576);
+        chunks.push(new Uint8Array(await file.slice(file.size - tailLen).arrayBuffer()));
+      }
+      let rate = 0;
+      let channels = 0;
+      let bits = 0;
+      let codec = null;
+      for (const buf of chunks) {
+        for (let i = findIn(buf, 'alac'); i >= 4 && i + 32 <= buf.length; i = findIn(buf.subarray(i + 1), 'alac') + i + 1) {
+          if (u32(buf, i - 4) !== 36) continue;      // the 36-byte ALACSpecificConfig
+          codec = 'ALAC';
+          bits = buf[i + 13];
+          channels = buf[i + 17];
+          rate = u32(buf, i + 28);
+          break;
+        }
+        if (!rate) {
+          for (const cc of ['mp4a', 'alac']) {
+            for (let i = findIn(buf, cc); i >= 4 && i + 32 <= buf.length; i = findIn(buf.subarray(i + 1), cc) + i + 1) {
+              const clean = u32(buf, i + 4) === 0 && u16(buf, i + 8) === 0;
+              const r = u32(buf, i + 28) >>> 16;
+              const ch = u16(buf, i + 20);
+              if (!clean || r < 8000 || r > 384000 || ch < 1 || ch > 8) continue;
+              codec = cc === 'mp4a' ? 'AAC' : 'ALAC';
+              rate = r;
+              channels = ch;
+              if (cc === 'alac') bits = bits || u16(buf, i + 22);
+              break;
+            }
+            if (rate) break;
+          }
+        }
+        if (rate) break;
+      }
+      if (rate) return { format: 'M4A', codec, rate, channels: channels || 2, bits };
+    }
     // ---- MP3 (first MPEG frame header)
     const scan = Math.min(head.length - 4, 65536);
     for (let i = 0; i < scan; i++) {
@@ -145,14 +203,6 @@ async function probeNativeRate(file) {
           : [11025, 12000, 8000];
       return { format: 'MP3', rate: table[srIdx], channels: ((head[i + 3] >> 6) & 3) === 3 ? 1 : 2, bits: 16 };
     }
-    // ---- MP4 / M4A (mdhd timescale)
-    const ascii = Array.from(head.subarray(0, Math.min(head.length, 262144)), (c) => String.fromCharCode(c)).join('');
-    const mi = ascii.indexOf('mdhd');
-    if (mi >= 0) {
-      const version = head[mi + 4];
-      const tsOff = mi + 4 + 4 + (version === 1 ? 16 : 8);
-      if (tsOff + 4 <= head.length) return { format: 'M4A', rate: dv.getUint32(tsOff), channels: 2, bits: 16 };
-    }
   } catch (err) { /* unreadable header — fall back to the device rate */ }
   return null;
 }
@@ -160,6 +210,7 @@ function describeAudio(info, size) {
   if (!info) return fmtBytes(size);
   return [
     info.format,
+    info.codec,                 // ALAC / AAC, when the container hides the codec
     info.rate ? rateText(info.rate) : null,
     info.bits ? `${info.bits}-bit` : null,
     info.channels === 2 ? '立体声' : info.channels ? `${info.channels}ch` : null,
@@ -178,6 +229,7 @@ async function addLocalFiles(files) {
       url: URL.createObjectURL(f),
       blob: true,
       sampleRate: info && info.rate ? info.rate : 0,
+      codec: (info && info.codec) || null,
       meta: describeAudio(info, f.size),
     });
   }
@@ -295,6 +347,7 @@ function restoreTitle() {
 
 export {
   AUDIO_RE,
+  currentTrack,
   addLocalFiles,
   describeAudio,
   loadServerTracks,
