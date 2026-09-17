@@ -5,7 +5,18 @@ import * as audio from './audio.js';
    loop and the quality governor. Everything in here is about pixels: the
    samples arrive as arguments from audio.js, and the transport readout is a
    hook the UI installs, so this module depends on neither. */
-const { $, clamp, TAU, MAXN, BUCKETS, S, winSize, dom, flags, FORMATTERS } = core;
+const {
+  $,
+  BUCKETS,
+  FORMATTERS,
+  MAXN,
+  S,
+  TAU,
+  clamp,
+  dom,
+  flags,
+  winSize,
+} = core;
 
 const bctx = dom.bg.getContext('2d');
 const nctx = dom.burnin.getContext('2d');   // burn-in layer

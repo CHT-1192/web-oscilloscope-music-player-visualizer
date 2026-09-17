@@ -199,15 +199,31 @@ oscillofun.flac — 描边 · 已微调
 
 ```
 server.js                       零依赖 Node 服务器（静态 + 播放列表 API + Range 流式传输）
-public/js/*.js                  ES 模块（服务器版按模块加载，单文件版由构建脚本内联）
+public/js/core.js               叶子：工具函数、设置对象 S、DOM 引用、toast、共享 flags
+public/js/audio.js              音频图、分析器、演示信号、采样率策略          ← core
+public/js/render.js             几何、刻度、束流、两个累积层、帧循环          ← core audio
+public/js/apply.js              设置对象 ↔ 控件/引擎/画面 的桥                ← core audio render
+public/js/presets.js            内置与自定义预设、两种模式、导出导入          ← core apply
+public/js/playlist.js           曲目列表、文件选择、演示信号、播放控制        ← core audio render presets
+public/js/ui.js                 控件、键盘、面板、拖放、走带显示              ← core audio render apply presets playlist
+public/js/main.js               入口：接线 + 调试接口 + init（不含业务逻辑）
 public/index.html  styles.css
 build-standalone.js             模块内联器 + 生成单文件版
 oscilloscope-standalone.html    单文件版（生成物，但要提交）
 docs/                           预览图
-test/verify.js                  93 项端到端验证
+test/verify.js                  95 项端到端验证
 test/bench.js                   性能基准
 LICENSE                         Apache License 2.0（取自 apache.org 原文，仅填入版权行）
 ```
+
+依赖是**分层单向**的（箭头只往下指，无环）：`core → audio → render → apply → presets → playlist → ui → main`。
+每个模块只通过命名空间调用（`audio.isLive()`）或顶部解构出来的别名引用依赖，没有跨模块的裸变量 —— 后者在
+一个大文件里永远不会暴露，拆开才看得见。
+
+服务器版直接按 ES 模块加载；单文件版由 `build-standalone.js` 把同一批源码内联成一个 `<script>`。
+内联器只认一种极小的方言（`import * as ns from './x.js'` + `export function/const/{...}`），
+其余形式（`export default`、`export let`、具名 import、动态 `import()`、**import 环**、指向不存在导出的别名）
+一律**报错退出**而不猜 —— 其中 `export let` 在真 ESM 里是活绑定、内联后会变成快照，与其悄悄编错不如编译不过。
 
 **音频文件不进版本库**（两个测试文件合计约 300 MB），见 `.gitignore`。
 把任意音频丢进项目根目录即可，服务器会自动扫到。

@@ -1053,6 +1053,10 @@ const winSize = () => WINDOW_CHOICES[clamp(S.windowIdx | 0, 0, WINDOW_CHOICES.le
  *  on render.js (render depends on audio for the samples). */
 const flags = { redraw: true, settle: 0 };
 
+/** The keys a preset carries. rateMode and renderScale describe the machine you
+ *  happen to be on, so a preset must not carry them to someone else's laptop. */
+const PRESET_KEYS = Object.keys(DEFAULTS).filter((k) => k !== 'rateMode' && k !== 'renderScale');
+
 const FORMATTERS = {
   gainX: (v) => Number(v).toFixed(2),
   gainY: (v) => Number(v).toFixed(2),
@@ -1116,6 +1120,7 @@ __exp.S = S;
 __exp.winSize = winSize;
 __exp.PRESET_COLORS = PRESET_COLORS;
 __exp.flags = flags;
+__exp.PRESET_KEYS = PRESET_KEYS;
 __exp.FORMATTERS = FORMATTERS;
 __exp.dom = dom;
 __exp.toast = toast;
@@ -1129,7 +1134,17 @@ const core = __req("js/core.js");
 /* The audio graph: one AudioContext whose sample rate is matched to the file,
    two analysers fed by a channel splitter, and the built-in demo oscillators.
    Nothing here knows about pixels, panels or presets. */
-const { $, clamp, MAXN, S, dom, winSize, flags, toast, FORMATTERS } = core;
+const {
+  $,
+  FORMATTERS,
+  MAXN,
+  S,
+  clamp,
+  dom,
+  flags,
+  toast,
+  winSize,
+} = core;
 
 /* ----------------------------------------------------------- audio graph */
 
@@ -1510,7 +1525,18 @@ const audio = __req("js/audio.js");
    loop and the quality governor. Everything in here is about pixels: the
    samples arrive as arguments from audio.js, and the transport readout is a
    hook the UI installs, so this module depends on neither. */
-const { $, clamp, TAU, MAXN, BUCKETS, S, winSize, dom, flags, FORMATTERS } = core;
+const {
+  $,
+  BUCKETS,
+  FORMATTERS,
+  MAXN,
+  S,
+  TAU,
+  clamp,
+  dom,
+  flags,
+  winSize,
+} = core;
 
 const bctx = dom.bg.getContext('2d');
 const nctx = dom.burnin.getContext('2d');   // burn-in layer
@@ -2236,126 +2262,160 @@ __exp.workStat = workStat;
 __exp.workTrimmed = workTrimmed;
 });
 
-/* ---- js/main.js ---------------------------------------------------- */
-__define("js/main.js", function (__exp, __req) {
+/* ---- js/apply.js --------------------------------------------------- */
+__define("js/apply.js", function (__exp, __req) {
 const core = __req("js/core.js");
 const audio = __req("js/audio.js");
 const render = __req("js/render.js");
 
+/* The bridge between the settings object and everything it drives: a plain
+   object in, every control / engine / pixel out. Both the preset layer and the
+   control panel go through here, so "the sliders show what is rendering" is
+   decided in one place. */
+
 const {
   $,
-  BUCKETS,
   DEFAULTS,
   FORMATTERS,
-  MAXN,
-  PRESET_COLORS,
+  PRESET_KEYS,
   S,
-  TAU,
-  WINDOW_CHOICES,
-  clamp,
   dom,
   flags,
-  fmtBytes,
-  fmtHz,
-  fmtTime,
-  setHint,
-  stamp,
-  toast,
-  winSize,
 } = core;
+
+
+
 const {
-  applyAnalyserSize,
-  applyRateMode,
-  buildDemo,
-  buildEngine,
-  clampRate,
-  currentAnalysers,
-  desiredRate,
-  ensureEngineRate,
-  ensureGraph,
-  isDemo,
-  isLive,
-  makeAnalyser,
-  rateText,
-  readSignal,
-  resumeContext,
-  setDemoSource,
-  setElementHook,
-  setSourceRate,
-  signal,
-  status,
-  teardownEngine,
-  updateRateBadge,
-} = audio;
-const {
-  adaptQuality,
-  applyScale,
-  clearBurnIn,
-  composite,
   drawBackground,
-  drawTrace,
-  effectiveDpr,
-  fadeAlpha,
-  fadeLayer,
-  findTrigger,
-  hexToRgb,
-  layout,
-  loop,
-  paintInto,
-  panelInset,
-  recordWork,
-  resetQuality,
-  resetRefSpeed,
-  resetTraceState,
-  resetWorkStats,
-  resettle,
-  resizeKeeping,
-  scaleLabel,
-  scrubAlpha,
-  setTickHandler,
-  startLoop,
-  state,
   updateBurnIn,
-  updatePerfBadge,
-  workSorted,
-  workStat,
-  workTrimmed,
 } = render;
 
-/* ============================================================================
- *  Web Oscilloscope Music Player / Visualizer
- *  ---------------------------------------------------------------------------
- *  Renders a stereo signal as an X/Y beam path:  left channel -> X, right -> Y.
- *
- *  DESIGN CONSTRAINTS (explicitly requested)
- *  ---------------------------------------------------------------------------
- *  1. NO RETRACE LINES (无回扫线)
- *     - A trace path is never `closePath()`d, so the beam never jumps from the
- *       end of a sweep back to its start.
- *     - Every frame starts a fresh sub-path with `moveTo()`; segments are never
- *       joined across analysis frames, so no wrap-around chord is ever drawn.
- *     - Optional VELOCITY BLANKING dims fast beam movements (brightness ∝ 1/v).
- *       Retrace/blanking sweeps in oscilloscope music are fast, so they fade to
- *       near-invisible exactly as they do on a real CRT — this is the principled
- *       way to kill retrace lines, not a post-process trick.
- *
- *  2. NO GLOW (无辉光)
- *     - No `shadowBlur` / `shadowColor`, no bloom pass.
- *     - No `globalCompositeOperation = 'lighter'` (additive) accumulation.
- *     - No CSS blur/drop-shadow filter anywhere near the canvas.
- *     - Afterglow uses `destination-out` alpha decay: pixels only ever get
- *       *dimmer*, they never add brightness to their neighbours.
- * ========================================================================== */
+function applyAccent(color) {
+  document.documentElement.style.setProperty('--accent', color);
+  for (const sw of dom.swatches.children) {
+    sw.classList.toggle('active', sw.dataset.color.toLowerCase() === String(color).toLowerCase());
+  }
+  drawBackground();   // the graticule is tinted from the same colour
+  flags.redraw = true;
+}
+function syncControlsFromState() {
+  for (const el of document.querySelectorAll('[data-set]')) {
+    el.value = S[el.dataset.set];
+    const out = document.querySelector(`[data-out="${el.dataset.set}"]`);
+    if (out) out.textContent = FORMATTERS[el.dataset.set](S[el.dataset.set]);
+  }
+  for (const btn of document.querySelectorAll('[data-toggle]')) {
+    btn.setAttribute('aria-pressed', String(!!S[btn.dataset.toggle]));
+  }
+  const rm = $('rateMode');
+  if (rm) rm.value = S.rateMode;
+  const rs = $('renderScale');
+  if (rs) rs.value = S.renderScale;
+  const br = document.querySelector('[data-set="blankRatio"]');
+  if (br) {
+    br.disabled = !S.blanking;
+    if (br.parentElement) br.parentElement.classList.toggle('is-off', !S.blanking);
+  }
+  updateBurnIn(false);
+  applyAccent(S.color);
+}
+
+function snapToControl(key, n) {
+  const el = document.querySelector(`[data-set="${key}"]`);
+  let v = n;
+  if (!el) return v;
+  const min = Number(el.min);
+  const max = Number(el.max);
+  const step = Number(el.step);
+  if (Number.isFinite(step) && step > 0) {
+    const base = Number.isFinite(min) ? min : 0;
+    v = Number((base + Math.round((v - base) / step) * step).toFixed(4));
+  }
+  if (Number.isFinite(min)) v = Math.max(min, v);
+  if (Number.isFinite(max)) v = Math.min(max, v);
+  return v;
+}
+/** Keep only keys we know, with types the UI can express. */
+function sanitizeSettings(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object') return out;
+  for (const k of PRESET_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(raw, k)) continue;
+    const ref = DEFAULTS[k];
+    const v = raw[k];
+    if (typeof ref === 'number') {
+      const n = Number(v);
+      if (Number.isFinite(n)) out[k] = snapToControl(k, k === 'windowIdx' ? Math.round(n) : n);
+    } else if (typeof ref === 'boolean') {
+      out[k] = v === true || v === 'true' || v === 1;
+    } else if (k === 'color') {
+      if (typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v)) out[k] = v.toLowerCase();
+    }
+  }
+  return out;
+}
+function captureSettings() {
+  const out = {};
+  for (const k of PRESET_KEYS) out[k] = S[k];
+  return out;
+}
+function settingsEqual(a, b) {
+  if (!a || !b) return false;
+  for (const k of PRESET_KEYS) {
+    const x = a[k];
+    const y = b[k];
+    if (typeof x === 'number' && typeof y === 'number') {
+      if (Math.abs(x - y) > 1e-6) return false;
+    } else if (x !== y) return false;
+  }
+  return true;
+}
+
+function applySettings(raw) {
+  Object.assign(S, sanitizeSettings(raw));
+  render.resetTraceState({ settle: true });
+  syncControlsFromState();     // sliders, toggles, colour and the dependent rows
+  audio.applyAnalyserSize();   // the window may have moved
+}
 
 
 
-/* --------------------------------------------------------------- presets */
+__exp.applyAccent = applyAccent;
+__exp.applySettings = applySettings;
+__exp.captureSettings = captureSettings;
+__exp.sanitizeSettings = sanitizeSettings;
+__exp.settingsEqual = settingsEqual;
+__exp.snapToControl = snapToControl;
+__exp.syncControlsFromState = syncControlsFromState;
+});
+
+/* ---- js/presets.js ------------------------------------------------- */
+__define("js/presets.js", function (__exp, __req) {
+const core = __req("js/core.js");
+const apply = __req("js/apply.js");
+
+/* Named looks: the built-in recipes, the user's saved ones, the two modes
+   (per-track memory or manual) and the export/import text. Storage lives here;
+   everything it applies goes through apply.js. */
+
+const {
+  $,
+  DEFAULTS,
+  dom,
+  toast,
+} = core;
+
+const {
+  applySettings,
+  captureSettings,
+  sanitizeSettings,
+  settingsEqual,
+} = apply;
 
 /* A preset captures the LOOK — everything that decides the picture. The two
    exceptions are rateMode and renderScale: those describe the machine you
    happen to be sitting at, and a preset that silently moved someone else's
    audio engine to 192 kHz would be a bug, not a feature. */
-const PRESET_KEYS = Object.keys(DEFAULTS).filter((k) => k !== 'rateMode' && k !== 'renderScale');
 const builtinPreset = (name, over) => ({ name, settings: Object.assign({}, DEFAULTS, over) });
 /* The two recipes name all three of their numbers explicitly rather than
    inheriting "whatever the default happens to be" — that inheritance is how
@@ -2368,7 +2428,6 @@ const BUILTIN_PRESETS = [
 const BUILTIN_NAMES = new Set(BUILTIN_PRESETS.map((p) => p.name));
 const PRESET_STORE = 'scope.presets.v1';
 const EXPORT_KIND = 'oscilloscope-presets';
-
 let customPresets = [];    // [{name, settings}] — the user's, in insertion order
 let presetMode = 'auto';   // 'auto' = remember per track | 'manual' = only on click
 let trackMemory = {};      // { [trackName]: { preset, settings } }
@@ -2378,13 +2437,392 @@ let editingPreset = null;  // preset being renamed in the save row
 let recordTimer = 0;
 let armTimer = 0;
 
+function storage() {
+  try { return window.localStorage; } catch (e) { return null; }   // file://, private mode
+}
+function cleanName(v) {
+  return String(v == null ? '' : v).replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 24);
+}
+/** Snap a number onto its control's own grid. Presets arrive from storage and
+ *  from other people's exports, and a value the slider cannot express would
+ *  make the readout disagree with what is actually rendering — the exact bug
+ *  class this file keeps having to fix. */
+
+const allPresets = () => BUILTIN_PRESETS.concat(customPresets);
+const findPreset = (name) => allPresets().find((p) => p.name === name) || null;
+
+function applyPreset(name) {
+  const p = findPreset(name);
+  if (!p) return;
+  applySettings(p.settings);
+  activePreset = name;
+  noteSettingsChanged();
+  renderPresetUI();
+  toast(`预设：${name}`);
+}
+/** The playlist owns which track is loaded; the preset layer is told, so it
+ *  needs no reference back into the playlist (which would close a cycle). */
+let trackKey = null;
+let trackLabel = null;
+function setTrackKey(key, label) {
+  trackKey = key || null;
+  trackLabel = label || null;
+  renderPresetStatus();
+}
+/* Every change is recorded for the track you are looking at, in BOTH modes:
+   manual mode only declines to *apply* it automatically, and keeping the
+   record means switching modes later does not lose anything. */
+/** ui.js and playlist.js set this when they apply a preset. */
+function setActivePreset(name) { activePreset = name || null; }
+
+function noteSettingsChanged() {
+  renderPresetStatus();
+  clearTimeout(recordTimer);
+  recordTimer = setTimeout(recordTrackSettings, 400);
+}
+function recordTrackSettings() {
+  if (!trackKey) return;
+  trackMemory[trackKey] = { preset: activePreset, settings: captureSettings() };
+  const keys = Object.keys(trackMemory);
+  if (keys.length > 80) delete trackMemory[keys[0]];   // bound the store
+  savePresets();
+}
+function restoreTrackSettings() {
+  if (presetMode === 'manual') { renderPresetStatus(); return; }
+  const entry = trackKey ? trackMemory[trackKey] : null;
+  if (entry) {
+    applySettings(entry.settings);
+    activePreset = entry.preset && findPreset(entry.preset) ? entry.preset : null;
+  } else {
+    activePreset = null;   // never seen this track: keep whatever is on screen
+  }
+  renderPresetUI();
+}
+function loadPresets() {
+  const ls = storage();
+  if (!ls) return;
+  let data = null;
+  try { data = JSON.parse(ls.getItem(PRESET_STORE) || 'null'); } catch (e) { data = null; }
+  if (!data || typeof data !== 'object') return;
+  if (data.mode === 'manual' || data.mode === 'auto') presetMode = data.mode;
+  if (Array.isArray(data.custom)) {
+    for (const p of data.custom) {
+      const name = cleanName(p && p.name);
+      const settings = sanitizeSettings(p && p.settings);
+      if (!name || BUILTIN_NAMES.has(name) || !Object.keys(settings).length) continue;
+      if (customPresets.some((c) => c.name === name)) continue;
+      customPresets.push({ name, settings });
+    }
+  }
+  if (data.tracks && typeof data.tracks === 'object') {
+    for (const [key, v] of Object.entries(data.tracks)) {
+      const settings = sanitizeSettings(v && v.settings);
+      if (!Object.keys(settings).length) continue;
+      trackMemory[key] = { preset: typeof v.preset === 'string' ? v.preset : null, settings };
+    }
+  }
+}
+function savePresets() {
+  const ls = storage();
+  if (!ls) return;
+  try {
+    ls.setItem(PRESET_STORE, JSON.stringify({ mode: presetMode, custom: customPresets, tracks: trackMemory }));
+  } catch (e) { /* quota or blocked — presets stay in memory for this session */ }
+}
+function uniqueName(base, except) {
+  const taken = (n) => BUILTIN_NAMES.has(n) || customPresets.some((p) => p.name === n && p.name !== except);
+  if (!taken(base)) return base;
+  for (let i = 2; i < 99; i++) if (!taken(`${base} ${i}`)) return `${base} ${i}`;
+  return `${base} ${Date.now()}`;
+}
+function parseImport(text) {
+  let data = null;
+  try { data = JSON.parse(String(text || '')); } catch (e) { return { error: '不是合法 JSON' }; }
+  const list = Array.isArray(data) ? data
+    : (data && Array.isArray(data.presets)) ? data.presets
+      : (data && data.settings) ? [data] : null;
+  if (!list) return { error: '找不到预设数组' };
+  const out = [];
+  for (const p of list) {
+    if (!p || typeof p !== 'object') continue;
+    const name = cleanName(p.name);
+    const settings = sanitizeSettings(p.settings);
+    if (!name || !Object.keys(settings).length) continue;
+    out.push({ name, settings });
+  }
+  if (!out.length) return { error: '这里没有可用的预设' };
+  return { presets: out };
+}
+
+function chipEl(p, custom, current) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  // Highlight only while the settings still ARE that preset: a chip that stays
+  // lit after you drag a slider would be claiming something untrue.
+  const on = activePreset === p.name && settingsEqual(current, p.settings);
+  b.className = 'chip'
+    + (on ? ' active' : '')
+    + (armedDelete === p.name ? ' armed' : '');
+  b.dataset.preset = p.name;
+  b.title = custom ? `${p.name} · 双击改名` : `${p.name}（内置）`;
+  const label = document.createElement('span');
+  label.textContent = armedDelete === p.name ? '删除？' : p.name;
+  b.appendChild(label);
+  if (custom) {
+    const x = document.createElement('span');
+    x.className = 'x';
+    x.textContent = '×';
+    x.title = '删除（再点一次确认）';
+    b.appendChild(x);
+  }
+  return b;
+}
+function renderPresetUI() {
+  for (const b of dom.presetMode.children) {
+    b.setAttribute('aria-checked', String(b.dataset.mode === presetMode));
+  }
+  const current = captureSettings();
+  dom.presetChips.textContent = '';
+  for (const p of BUILTIN_PRESETS) dom.presetChips.appendChild(chipEl(p, false, current));
+  for (const p of customPresets) dom.presetChips.appendChild(chipEl(p, true, current));
+  renderPresetStatus();
+}
+/** Cheap enough to run on every input event: only toggles a class. */
+function refreshChipStates() {
+  const current = captureSettings();
+  for (const b of dom.presetChips.children) {
+    const p = findPreset(b.dataset.preset);
+    b.classList.toggle('active', !!p && activePreset === p.name && settingsEqual(current, p.settings));
+  }
+}
+function renderPresetStatus() {
+  const where = trackLabel || '未加载音频';
+  const p = activePreset ? findPreset(activePreset) : null;
+  const el = dom.presetStatus;
+  refreshChipStates();
+  el.textContent = '';
+  el.appendChild(document.createTextNode(`${where} — `));
+  if (p) {
+    const b = document.createElement('b');
+    b.textContent = p.name;
+    el.appendChild(b);
+    if (!settingsEqual(captureSettings(), p.settings)) el.appendChild(document.createTextNode(' · 已微调'));
+  } else {
+    el.appendChild(document.createTextNode('自定义参数'));
+  }
+  if (presetMode === 'manual') el.appendChild(document.createTextNode(' · 手动'));
+}
+function onChipClick(ev) {
+  const b = ev.target.closest('.chip');
+  if (!b) return;
+  const name = b.dataset.preset;
+  const custom = customPresets.some((p) => p.name === name);
+  if (ev.target.closest('.x') && custom) {
+    clearTimeout(armTimer);
+    if (armedDelete === name) {
+      armedDelete = null;
+      deletePreset(name);
+    } else {
+      armedDelete = name;
+      armTimer = setTimeout(() => { armedDelete = null; renderPresetUI(); }, 3000);
+      renderPresetUI();
+    }
+    return;
+  }
+  armedDelete = null;
+  applyPreset(name);
+}
+function deletePreset(name) {
+  const i = customPresets.findIndex((p) => p.name === name);
+  if (i < 0) return;
+  customPresets.splice(i, 1);
+  if (activePreset === name) activePreset = null;
+  for (const k of Object.keys(trackMemory)) {
+    if (trackMemory[k].preset === name) trackMemory[k].preset = null;
+  }
+  savePresets();
+  renderPresetUI();
+  toast(`已删除「${name}」`);
+}
+function suggestName() {
+  for (let i = 1; i < 99; i++) if (!findPreset(`我的预设 ${i}`)) return `我的预设 ${i}`;
+  return '预设';
+}
+function openSaveRow(rename) {
+  editingPreset = rename || null;
+  dom.presetRow.hidden = false;
+  dom.presetName.value = rename || suggestName();
+  dom.presetName.focus();
+  dom.presetName.select();
+}
+function closeSaveRow() {
+  editingPreset = null;
+  dom.presetRow.hidden = true;
+}
+function commitSave() {
+  const wanted = cleanName(dom.presetName.value) || suggestName();
+  const settings = captureSettings();
+  if (!editingPreset && BUILTIN_NAMES.has(wanted)) {
+    toast('内置预设不能覆盖，换个名字');
+    return;
+  }
+  const name = uniqueName(wanted, editingPreset);
+  const renameFrom = editingPreset;
+  if (renameFrom) {
+    const i = customPresets.findIndex((p) => p.name === renameFrom);
+    if (i >= 0) customPresets[i] = { name, settings };
+    else customPresets.push({ name, settings });
+    if (activePreset === renameFrom) activePreset = name;
+  } else {
+    const dup = customPresets.find((p) => p.name === name);
+    if (dup) dup.settings = settings;              // same name = overwrite
+    else customPresets.push({ name, settings });
+  }
+  activePreset = name;
+  closeSaveRow();
+  savePresets();
+  renderPresetUI();
+  toast(renameFrom && renameFrom !== name ? `已重命名为「${name}」`
+    : renameFrom ? `已更新「${name}」` : `已保存「${name}」`);
+}
+/* The box stays out of the way until it is needed: the preset group sits at
+   the top of the panel, so an always-empty textarea would push every everyday
+   control further down the scroll for the 1 % of the time it is in use. */
+function doExport() {
+  dom.presetText.hidden = false;
+  dom.presetText.focus();
+  if (!customPresets.length) {
+    dom.presetText.value = '';
+    toast('还没有自定义预设');
+    return;
+  }
+  dom.presetText.value = JSON.stringify({ kind: EXPORT_KIND, v: 1, presets: customPresets }, null, 1);
+  dom.presetText.select();
+  toast(`已导出 ${customPresets.length} 个预设，复制这段文本即可`);
+}
+function doImport() {
+  if (dom.presetText.hidden) {
+    dom.presetText.hidden = false;
+    dom.presetText.value = '';
+    dom.presetText.focus();
+    toast('粘贴预设文本，再点一次「导入」');
+    return;
+  }
+  if (!dom.presetText.value.trim()) { toast('先粘贴一段预设文本'); return; }
+  const r = parseImport(dom.presetText.value);
+  if (r.error) { toast(`导入失败：${r.error}`); return; }
+  for (const p of r.presets) customPresets.push({ name: uniqueName(p.name), settings: p.settings });
+  dom.presetText.value = '';
+  dom.presetText.hidden = true;      // done with it — give the panel its space back
+  savePresets();
+  renderPresetUI();
+  toast(`已导入 ${r.presets.length} 个预设`);
+}
+function setPresetMode(mode) {
+  presetMode = mode === 'manual' ? 'manual' : 'auto';
+  savePresets();
+  renderPresetUI();
+  if (presetMode === 'auto') restoreTrackSettings();   // honour the memory right away
+  toast(presetMode === 'auto' ? '预设：自动（按曲记忆）' : '预设：手动');
+}
+function initPresets() {
+  loadPresets();
+  dom.presetChips.addEventListener('click', onChipClick);
+  dom.presetChips.addEventListener('dblclick', (ev) => {
+    const b = ev.target.closest('.chip');
+    if (b && customPresets.some((p) => p.name === b.dataset.preset)) openSaveRow(b.dataset.preset);
+  });
+  dom.presetMode.addEventListener('click', (ev) => {
+    const b = ev.target.closest('button[data-mode]');
+    if (b) setPresetMode(b.dataset.mode);
+  });
+  $('btnPresetSave').addEventListener('click', () => openSaveRow(null));
+  $('btnPresetCommit').addEventListener('click', commitSave);
+  $('btnPresetCancel').addEventListener('click', closeSaveRow);
+  $('btnPresetExport').addEventListener('click', doExport);
+  $('btnPresetImport').addEventListener('click', doImport);
+  dom.presetName.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') { ev.preventDefault(); commitSave(); }
+    else if (ev.key === 'Escape') { ev.preventDefault(); closeSaveRow(); }
+  });
+  renderPresetUI();
+}
 
 
-/* -------------------------------------------------------------- playlist */
 
-let tracks = [];
+__exp.BUILTIN_NAMES = BUILTIN_NAMES;
+__exp.BUILTIN_PRESETS = BUILTIN_PRESETS;
+__exp.EXPORT_KIND = EXPORT_KIND;
+__exp.PRESET_STORE = PRESET_STORE;
+__exp.allPresets = allPresets;
+__exp.applyPreset = applyPreset;
+__exp.builtinPreset = builtinPreset;
+__exp.chipEl = chipEl;
+__exp.cleanName = cleanName;
+__exp.closeSaveRow = closeSaveRow;
+__exp.commitSave = commitSave;
+__exp.deletePreset = deletePreset;
+__exp.doExport = doExport;
+__exp.doImport = doImport;
+__exp.findPreset = findPreset;
+__exp.initPresets = initPresets;
+__exp.loadPresets = loadPresets;
+__exp.noteSettingsChanged = noteSettingsChanged;
+__exp.onChipClick = onChipClick;
+__exp.openSaveRow = openSaveRow;
+__exp.parseImport = parseImport;
+__exp.recordTrackSettings = recordTrackSettings;
+__exp.refreshChipStates = refreshChipStates;
+__exp.renderPresetStatus = renderPresetStatus;
+__exp.renderPresetUI = renderPresetUI;
+__exp.restoreTrackSettings = restoreTrackSettings;
+__exp.savePresets = savePresets;
+__exp.setActivePreset = setActivePreset;
+__exp.setPresetMode = setPresetMode;
+__exp.setTrackKey = setTrackKey;
+__exp.storage = storage;
+__exp.suggestName = suggestName;
+__exp.uniqueName = uniqueName;
+});
+
+/* ---- js/playlist.js ------------------------------------------------ */
+__define("js/playlist.js", function (__exp, __req) {
+const core = __req("js/core.js");
+const audio = __req("js/audio.js");
+const render = __req("js/render.js");
+const presets = __req("js/presets.js");
+
+/* What is loaded: the track list, the file picker, the demo switch and basic
+   transport. Reading files and knowing their native sample rate lives here;
+   the graph itself belongs to audio.js. */
+
+const {
+  $,
+  PRESET_KEYS,
+  clamp,
+  dom,
+  flags,
+  fmtBytes,
+  fmtHz,
+  setHint,
+  toast,
+} = core;
+
+const {
+  ensureEngineRate,
+  rateText,
+  resumeContext,
+} = audio;
+
+
+
+const {
+  restoreTrackSettings,
+} = presets;
+
+/** Stable identity: this array is exported, so it is never reassigned. */
+const tracks = [];
 let curIndex = -1;
-
 function renderPlaylist() {
   const ul = dom.trackList;
   ul.textContent = '';
@@ -2417,7 +2855,6 @@ function renderPlaylist() {
   });
   dom.listCount.textContent = `(${tracks.length})`;
 }
-
 async function loadServerTracks() {
   if (location.protocol === 'file:') return false;
   try {
@@ -2425,7 +2862,7 @@ async function loadServerTracks() {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     if (!Array.isArray(data.tracks) || !data.tracks.length) return false;
-    tracks = data.tracks.map((t) => ({
+    const listed = data.tracks.map((t) => ({
       name: t.name,
       url: t.url,
       blob: false,
@@ -2439,15 +2876,15 @@ async function loadServerTracks() {
         t.sizeText,
       ].filter(Boolean).join(' · '),
     }));
+    tracks.length = 0;
+    tracks.push(...listed);
     renderPlaylist();
     return true;
   } catch (err) {
     return false;   // standalone / file:// — the file picker takes over
   }
 }
-
 const AUDIO_RE = /\.(wav|wave|flac|mp3|m4a|aac|ogg|oga|opus|weba|webm|aif|aiff|caf)$/i;
-
 /* Read the native sample rate straight out of the file header (a small
    leading slice — nothing is decoded). Needed so a local file can get an
    engine at its own rate instead of being resampled into the device rate.
@@ -2457,7 +2894,6 @@ async function probeNativeRate(file) {
     const head = new Uint8Array(await file.slice(0, 262144).arrayBuffer());
     const dv = new DataView(head.buffer);
     const tag = (o) => String.fromCharCode(head[o] || 0, head[o + 1] || 0, head[o + 2] || 0, head[o + 3] || 0);
-
     // ---- WAV / RIFF
     if (tag(0) === 'RIFF' && tag(8) === 'WAVE') {
       let off = 12;
@@ -2476,7 +2912,6 @@ async function probeNativeRate(file) {
         off += 8 + size + (size % 2);
       }
     }
-
     // ---- FLAC / STREAMINFO
     if (tag(0) === 'fLaC' && head.length >= 42) {
       const b = head.subarray(8, 42);
@@ -2487,7 +2922,6 @@ async function probeNativeRate(file) {
       };
       return { format: 'FLAC', rate: bits(80, 20), channels: bits(100, 3) + 1, bits: bits(103, 5) + 1 };
     }
-
     // ---- MP3 (first MPEG frame header)
     const scan = Math.min(head.length - 4, 65536);
     for (let i = 0; i < scan; i++) {
@@ -2500,7 +2934,6 @@ async function probeNativeRate(file) {
           : [11025, 12000, 8000];
       return { format: 'MP3', rate: table[srIdx], channels: ((head[i + 3] >> 6) & 3) === 3 ? 1 : 2, bits: 16 };
     }
-
     // ---- MP4 / M4A (mdhd timescale)
     const ascii = Array.from(head.subarray(0, Math.min(head.length, 262144)), (c) => String.fromCharCode(c)).join('');
     const mi = ascii.indexOf('mdhd');
@@ -2512,7 +2945,6 @@ async function probeNativeRate(file) {
   } catch (err) { /* unreadable header — fall back to the device rate */ }
   return null;
 }
-
 function describeAudio(info, size) {
   if (!info) return fmtBytes(size);
   return [
@@ -2523,7 +2955,6 @@ function describeAudio(info, size) {
     fmtBytes(size),
   ].filter(Boolean).join(' · ');
 }
-
 async function addLocalFiles(files) {
   const list = Array.from(files).filter((f) => /^audio\//.test(f.type) || AUDIO_RE.test(f.name));
   if (!list.length) { toast('没有识别到音频文件'); return; }
@@ -2542,7 +2973,6 @@ async function addLocalFiles(files) {
   renderPlaylist();
   loadTrack(first, true);
 }
-
 /** Rebuild the <audio> element around the engine change and restore where the
  *  listener was. audio.js drives this because it owns the graph; knowing which
  *  file that is, is this layer's job. */
@@ -2562,20 +2992,19 @@ function reloadCurrentSource({ wasDemo, time, playing }) {
     play();
   }
 }
-
 function loadTrack(i, autoplay) {
   const t = tracks[i];
   if (!t) return;
   const same = i === curIndex && !audio.isDemo();
   if (audio.isDemo()) setDemo(false);
   curIndex = i;
+    presets.setTrackKey(t.name, t.name);
   // Build/rebuild the engine at this file's own rate *before* loading, so the
   // media is never resampled into the device rate on the analysis path.
   audio.setSourceRate(t.sampleRate);
   ensureEngineRate();
   dom.audio.src = t.url;
   dom.audio.load();
-
   dom.trackTitle.textContent = t.name;
   dom.trackSub.textContent = t.meta || '';
   document.title = `${t.name} · 示波器音乐播放器`;
@@ -2584,12 +3013,8 @@ function loadTrack(i, autoplay) {
   // Re-selecting the same row must not undo tweaks the user has not saved yet.
   if (!same) restoreTrackSettings();
   render.resetTraceState();
-
   if (autoplay) play();
 }
-
-/* --------------------------------------------------------------- playback */
-
 async function play() {
   resumeContext();
   if (audio.isDemo()) {
@@ -2609,18 +3034,15 @@ async function play() {
     else toast('无法播放：' + (err && err.message ? err.message : err));
   }
 }
-
 function togglePlay() {
   if (dom.audio.paused || dom.audio.ended) play();
   else dom.audio.pause();
 }
-
 function nextTrack(step) {
   if (!tracks.length) return;
   const i = (curIndex + step + tracks.length) % tracks.length;
   loadTrack(i, true);
 }
-
 function seekBy(delta) {
   const d = dom.audio.duration;
   if (!Number.isFinite(d)) return;
@@ -2628,17 +3050,124 @@ function seekBy(delta) {
   flags.redraw = true;
 }
 
-/* ------------------------------------------------------------ main loop */
+function setDemo(on) {
+  if (!audio.setDemoSource(on)) return;
+  if (on) {
+    presets.setTrackKey('@demo', '演示信号');
+    dom.audio.pause();
+    dom.btnDemo.classList.add('on');
+    dom.trackTitle.textContent = '演示信号 · Demo';
+    dom.trackSub.textContent = '内置合成器 · 3:2 利萨如曲线';
+    document.title = '演示信号 · 示波器音乐播放器';
+    setHint(false);
+    flags.redraw = true;
+    render.resetRefSpeed();
+    restoreTrackSettings();   // the demo is remembered like any other "track"
+  } else {
+    dom.btnDemo.classList.remove('on');
+    restoreTitle();
+  }
+}
+function restoreTitle() {
+  const t = tracks[curIndex];
+  if (t) {
+    dom.trackTitle.textContent = t.name;
+    dom.trackSub.textContent = t.meta || '';
+    document.title = `${t.name} · 示波器音乐播放器`;
+  } else {
+    dom.trackTitle.textContent = '未加载音频';
+    dom.trackSub.textContent = '拖入文件，或打开播放列表';
+    document.title = '示波器音乐播放器 · Oscilloscope Music Player';
+  }
+}
 
-/* ------------------------------------------------------- transport UI sync */
+
+
+__exp.AUDIO_RE = AUDIO_RE;
+__exp.addLocalFiles = addLocalFiles;
+__exp.describeAudio = describeAudio;
+__exp.loadServerTracks = loadServerTracks;
+__exp.loadTrack = loadTrack;
+__exp.nextTrack = nextTrack;
+__exp.play = play;
+__exp.probeNativeRate = probeNativeRate;
+__exp.reloadCurrentSource = reloadCurrentSource;
+__exp.renderPlaylist = renderPlaylist;
+__exp.restoreTitle = restoreTitle;
+__exp.seekBy = seekBy;
+__exp.setDemo = setDemo;
+__exp.togglePlay = togglePlay;
+__exp.tracks = tracks;
+});
+
+/* ---- js/ui.js ------------------------------------------------------ */
+__define("js/ui.js", function (__exp, __req) {
+const core = __req("js/core.js");
+const audio = __req("js/audio.js");
+const render = __req("js/render.js");
+const apply = __req("js/apply.js");
+const presets = __req("js/presets.js");
+const playlist = __req("js/playlist.js");
+
+/* The chrome: controls, keyboard, panels, drag & drop, the transport readout.
+   Everything here is a consumer — it drives the other modules and owns no
+   engine state of its own. */
+
+const {
+  $,
+  DEFAULTS,
+  FORMATTERS,
+  PRESET_COLORS,
+  PRESET_KEYS,
+  S,
+  clamp,
+  dom,
+  flags,
+  fmtTime,
+  stamp,
+  toast,
+} = core;
+
+const {
+  applyAnalyserSize,
+  applyRateMode,
+  buildEngine,
+  rateText,
+} = audio;
+
+const {
+  applyScale,
+  drawBackground,
+  effectiveDpr,
+  layout,
+  state,
+  updateBurnIn,
+} = render;
+
+const {
+  applyAccent,
+  syncControlsFromState,
+} = apply;
+
+const {
+  noteSettingsChanged,
+} = presets;
+
+const {
+  addLocalFiles,
+  nextTrack,
+  play,
+  seekBy,
+  setDemo,
+  togglePlay,
+  tracks,
+} = playlist;
 
 const uiCache = { cur: -1, dur: -1, seek: -1 };
-
 function updateTransportUI() {
   const a = dom.audio;
   const cur = Number.isFinite(a.currentTime) ? a.currentTime : 0;
   const dur = Number.isFinite(a.duration) ? a.duration : 0;
-
   if (Math.abs(cur - uiCache.cur) >= 0.06 || Math.abs(dur - uiCache.dur) > 0.2) {
     uiCache.cur = cur;
     uiCache.dur = dur;
@@ -2651,41 +3180,7 @@ function updateTransportUI() {
     }
   }
 }
-
 let seekHeld = false;
-
-/* ------------------------------------------------------------- UI wiring */
-
-function applyAccent(color) {
-  document.documentElement.style.setProperty('--accent', color);
-  for (const sw of dom.swatches.children) {
-    sw.classList.toggle('active', sw.dataset.color.toLowerCase() === String(color).toLowerCase());
-  }
-  drawBackground();   // the graticule is tinted from the same colour
-  flags.redraw = true;
-}
-
-function syncControlsFromState() {
-  for (const el of document.querySelectorAll('[data-set]')) {
-    el.value = S[el.dataset.set];
-    const out = document.querySelector(`[data-out="${el.dataset.set}"]`);
-    if (out) out.textContent = FORMATTERS[el.dataset.set](S[el.dataset.set]);
-  }
-  for (const btn of document.querySelectorAll('[data-toggle]')) {
-    btn.setAttribute('aria-pressed', String(!!S[btn.dataset.toggle]));
-  }
-  const rm = $('rateMode');
-  if (rm) rm.value = S.rateMode;
-  const rs = $('renderScale');
-  if (rs) rs.value = S.renderScale;
-  const br = document.querySelector('[data-set="blankRatio"]');
-  if (br) {
-    br.disabled = !S.blanking;
-    if (br.parentElement) br.parentElement.classList.toggle('is-off', !S.blanking);
-  }
-  updateBurnIn(false);
-  applyAccent(S.color);
-}
 
 function bindControls() {
   for (const el of document.querySelectorAll('[data-set]')) {
@@ -2702,7 +3197,6 @@ function bindControls() {
     };
     el.addEventListener('input', onInput);
   }
-
   // colour presets
   for (const c of PRESET_COLORS) {
     const b = document.createElement('button');
@@ -2723,7 +3217,6 @@ function bindControls() {
     });
     dom.swatches.appendChild(b);
   }
-
   for (const btn of document.querySelectorAll('[data-toggle]')) {
     const key = btn.dataset.toggle;
     btn.setAttribute('aria-pressed', String(!!S[key]));
@@ -2737,11 +3230,9 @@ function bindControls() {
       noteSettingsChanged();
     });
   }
-
   for (const el of document.querySelectorAll('[data-close]')) {
     el.addEventListener('click', () => $(el.dataset.close).classList.remove('open'));
   }
-
   // transport
   dom.btnPlay.addEventListener('click', togglePlay);
   dom.btnPrev.addEventListener('click', () => nextTrack(-1));
@@ -2754,7 +3245,6 @@ function bindControls() {
   });
   dom.btnSettings.addEventListener('click', () => togglePanel('panelSettings'));
   dom.btnList.addEventListener('click', () => togglePanel('panelList'));
-
   dom.btnFull.addEventListener('click', () => {
     if (document.fullscreenElement) document.exitFullscreen();
     else document.documentElement.requestFullscreen().catch(() => toast('无法进入全屏'));
@@ -2764,7 +3254,6 @@ function bindControls() {
     resetSettings();
     toast('已恢复默认设置');
   });
-
   const openPicker = () => dom.fileInput.click();
   $('btnOpen').addEventListener('click', openPicker);
   $('hintOpen').addEventListener('click', (e) => { e.stopPropagation(); openPicker(); });
@@ -2773,7 +3262,6 @@ function bindControls() {
     dom.fileInput.value = '';
   });
   dom.hint.addEventListener('click', () => { if (tracks.length || dom.audio.src) play(); });
-
   // seek
   dom.seek.addEventListener('pointerdown', () => { seekHeld = true; });
   dom.seek.addEventListener('input', () => {
@@ -2790,14 +3278,12 @@ function bindControls() {
   dom.seek.addEventListener('pointerup', releaseSeek);
   dom.seek.addEventListener('pointercancel', releaseSeek);
   dom.seek.addEventListener('change', releaseSeek);
-
   dom.volume.addEventListener('input', () => { dom.audio.volume = Number(dom.volume.value); });
   dom.rate.addEventListener('change', () => {
     dom.audio.preservesPitch = true;
     dom.audio.playbackRate = Number(dom.rate.value);
   });
   dom.audio.volume = Number(dom.volume.value);
-
   const rateModeSel = $('rateMode');
   if (rateModeSel) {
     rateModeSel.value = S.rateMode;
@@ -2811,7 +3297,6 @@ function bindControls() {
           : `引擎 ${rateText(eng)} · ${eng === srcRate ? '原生' : `源 ${rateText(srcRate)} · 重采样`}`);
     });
   }
-
   const scaleSel = $('renderScale');    if (scaleSel) {
     scaleSel.value = S.renderScale;
     scaleSel.addEventListener('change', () => {
@@ -2821,17 +3306,14 @@ function bindControls() {
       toast(`渲染缩放 ${Math.round(effectiveDpr() * 100)}%`);
     });
   }
-
   const perfBtn = $('btnPerf');
   if (perfBtn) perfBtn.addEventListener('click', () => setPerfMode(!perfSnapshot));
-
   window.addEventListener('resize', () => { if (layout()) flags.redraw = true; });
   if (window.ResizeObserver) {
     new ResizeObserver(() => { if (layout()) flags.redraw = true; }).observe(dom.stage);
   }
   document.addEventListener('fullscreenchange', () => { if (layout()) flags.redraw = true; });
 }
-
 /** Audio-element listeners. Re-attached every time the engine rebuilds the
  *  element (a new AudioContext needs a new <audio> — see buildEngine). */
 function bindAudioEvents(el) {
@@ -2855,7 +3337,6 @@ function bindAudioEvents(el) {
     flags.redraw = true;
   });
 }
-
 /** Restore every setting to its default, including the derived state that
  *  syncControlsFromState() alone does not touch (analyser size, render
  *  scale, smoothing accumulators). Forgetting the analyser size here left a
@@ -2863,36 +3344,6 @@ function bindAudioEvents(el) {
 /** Switch the visible source to/from the built-in demo. audio.js owns the
  *  graph; the titles, the button, the preset memory and the render state are
  *  this layer's business — which is why the engine takes a hook instead. */
-function setDemo(on) {
-  if (!audio.setDemoSource(on)) return;
-  if (on) {
-    dom.audio.pause();
-    dom.btnDemo.classList.add('on');
-    dom.trackTitle.textContent = '演示信号 · Demo';
-    dom.trackSub.textContent = '内置合成器 · 3:2 利萨如曲线';
-    document.title = '演示信号 · 示波器音乐播放器';
-    setHint(false);
-    flags.redraw = true;
-    render.resetRefSpeed();
-    restoreTrackSettings();   // the demo is remembered like any other "track"
-  } else {
-    dom.btnDemo.classList.remove('on');
-    restoreTitle();
-  }
-}
-
-function restoreTitle() {
-  const t = tracks[curIndex];
-  if (t) {
-    dom.trackTitle.textContent = t.name;
-    dom.trackSub.textContent = t.meta || '';
-    document.title = `${t.name} · 示波器音乐播放器`;
-  } else {
-    dom.trackTitle.textContent = '未加载音频';
-    dom.trackSub.textContent = '拖入文件，或打开播放列表';
-    document.title = '示波器音乐播放器 · Oscilloscope Music Player';
-  }
-}
 
 function resetSettings() {
   Object.assign(S, DEFAULTS);
@@ -2903,16 +3354,14 @@ function resetSettings() {
   applyScale();
   drawBackground();
   updateBurnIn(true);
-  activePreset = '默认';      // defaults ARE the 默认 preset, for the keys it covers
+  presets.setActivePreset('默认');   // defaults ARE the 默认 preset, for the keys it covers
   noteSettingsChanged();
 }
-
 /** One-click low-power preset. The levers are chosen from measurements in
  *  test/bench.js: the per-frame cost is dominated by how many segments get
  *  drawn, so shrinking the window is what actually helps (32768 -> 1024 took
  *  a frame from 1.49 ms to 0.08 ms). Render scale barely moved the needle. */
 let perfSnapshot = null;
-
 function setPerfMode(on) {
   const btn = $('btnPerf');
   if (on) {
@@ -2932,7 +3381,6 @@ function setPerfMode(on) {
     perfSnapshot = null;
   }
   if (btn) btn.setAttribute('aria-pressed', String(!!on));
-
   syncControlsFromState();
   applyAnalyserSize();
   applyRateMode();
@@ -2940,11 +3388,10 @@ function setPerfMode(on) {
   drawBackground();
   render.resetRefSpeed();
   flags.settle = 100;
-  activePreset = null;   // perf mode is a machine setting, not a preset
+  presets.setActivePreset(null);   // perf mode is a machine setting, not a preset
   noteSettingsChanged();
   toast(on ? '性能模式：开' : '性能模式：关');
 }
-
 function togglePanel(id) {
   const p = $(id);
   const open = !p.classList.contains('open');
@@ -2954,7 +3401,6 @@ function togglePanel(id) {
   // Left and right rails are independent now that they reserve their own
   // space, so both panels can be open at once.
 }
-
 function screenshot() {
   const c = render.composite();
   if (!c) return;
@@ -2972,408 +3418,11 @@ function screenshot() {
   }, 'image/png');
 }
 
-/* ---------------------------------------------------------------- presets */
-
-function storage() {
-  try { return window.localStorage; } catch (e) { return null; }   // file://, private mode
-}
-
-function cleanName(v) {
-  return String(v == null ? '' : v).replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 24);
-}
-
-/** Snap a number onto its control's own grid. Presets arrive from storage and
- *  from other people's exports, and a value the slider cannot express would
- *  make the readout disagree with what is actually rendering — the exact bug
- *  class this file keeps having to fix. */
-function snapToControl(key, n) {
-  const el = document.querySelector(`[data-set="${key}"]`);
-  let v = n;
-  if (!el) return v;
-  const min = Number(el.min);
-  const max = Number(el.max);
-  const step = Number(el.step);
-  if (Number.isFinite(step) && step > 0) {
-    const base = Number.isFinite(min) ? min : 0;
-    v = Number((base + Math.round((v - base) / step) * step).toFixed(4));
-  }
-  if (Number.isFinite(min)) v = Math.max(min, v);
-  if (Number.isFinite(max)) v = Math.min(max, v);
-  return v;
-}
-
-/** Keep only keys we know, with types the UI can express. */
-function sanitizeSettings(raw) {
-  const out = {};
-  if (!raw || typeof raw !== 'object') return out;
-  for (const k of PRESET_KEYS) {
-    if (!Object.prototype.hasOwnProperty.call(raw, k)) continue;
-    const ref = DEFAULTS[k];
-    const v = raw[k];
-    if (typeof ref === 'number') {
-      const n = Number(v);
-      if (Number.isFinite(n)) out[k] = snapToControl(k, k === 'windowIdx' ? Math.round(n) : n);
-    } else if (typeof ref === 'boolean') {
-      out[k] = v === true || v === 'true' || v === 1;
-    } else if (k === 'color') {
-      if (typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v)) out[k] = v.toLowerCase();
-    }
-  }
-  return out;
-}
-
-function captureSettings() {
-  const out = {};
-  for (const k of PRESET_KEYS) out[k] = S[k];
-  return out;
-}
-
-function settingsEqual(a, b) {
-  if (!a || !b) return false;
-  for (const k of PRESET_KEYS) {
-    const x = a[k];
-    const y = b[k];
-    if (typeof x === 'number' && typeof y === 'number') {
-      if (Math.abs(x - y) > 1e-6) return false;
-    } else if (x !== y) return false;
-  }
-  return true;
-}
-
-const allPresets = () => BUILTIN_PRESETS.concat(customPresets);
-const findPreset = (name) => allPresets().find((p) => p.name === name) || null;
-
-function applySettings(raw) {
-  Object.assign(S, sanitizeSettings(raw));
-  render.resetTraceState({ settle: true });
-  syncControlsFromState();     // sliders, toggles, colour and the dependent rows
-  audio.applyAnalyserSize();   // the window may have moved
-}
-
-function applyPreset(name) {
-  const p = findPreset(name);
-  if (!p) return;
-  applySettings(p.settings);
-  activePreset = name;
-  noteSettingsChanged();
-  renderPresetUI();
-  toast(`预设：${name}`);
-}
-
-function currentTrackKey() {
-  if (audio.isDemo()) return '@demo';
-  const t = tracks[curIndex];
-  return t ? t.name : null;
-}
-
-/* Every change is recorded for the track you are looking at, in BOTH modes:
-   manual mode only declines to *apply* it automatically, and keeping the
-   record means switching modes later does not lose anything. */
-function noteSettingsChanged() {
-  renderPresetStatus();
-  clearTimeout(recordTimer);
-  recordTimer = setTimeout(recordTrackSettings, 400);
-}
-
-function recordTrackSettings() {
-  const key = currentTrackKey();
-  if (!key) return;
-  trackMemory[key] = { preset: activePreset, settings: captureSettings() };
-  const keys = Object.keys(trackMemory);
-  if (keys.length > 80) delete trackMemory[keys[0]];   // bound the store
-  savePresets();
-}
-
-function restoreTrackSettings() {
-  if (presetMode === 'manual') { renderPresetStatus(); return; }
-  const key = currentTrackKey();
-  const entry = key ? trackMemory[key] : null;
-  if (entry) {
-    applySettings(entry.settings);
-    activePreset = entry.preset && findPreset(entry.preset) ? entry.preset : null;
-  } else {
-    activePreset = null;   // never seen this track: keep whatever is on screen
-  }
-  renderPresetUI();
-}
-
-function loadPresets() {
-  const ls = storage();
-  if (!ls) return;
-  let data = null;
-  try { data = JSON.parse(ls.getItem(PRESET_STORE) || 'null'); } catch (e) { data = null; }
-  if (!data || typeof data !== 'object') return;
-  if (data.mode === 'manual' || data.mode === 'auto') presetMode = data.mode;
-  if (Array.isArray(data.custom)) {
-    for (const p of data.custom) {
-      const name = cleanName(p && p.name);
-      const settings = sanitizeSettings(p && p.settings);
-      if (!name || BUILTIN_NAMES.has(name) || !Object.keys(settings).length) continue;
-      if (customPresets.some((c) => c.name === name)) continue;
-      customPresets.push({ name, settings });
-    }
-  }
-  if (data.tracks && typeof data.tracks === 'object') {
-    for (const [key, v] of Object.entries(data.tracks)) {
-      const settings = sanitizeSettings(v && v.settings);
-      if (!Object.keys(settings).length) continue;
-      trackMemory[key] = { preset: typeof v.preset === 'string' ? v.preset : null, settings };
-    }
-  }
-}
-
-function savePresets() {
-  const ls = storage();
-  if (!ls) return;
-  try {
-    ls.setItem(PRESET_STORE, JSON.stringify({ mode: presetMode, custom: customPresets, tracks: trackMemory }));
-  } catch (e) { /* quota or blocked — presets stay in memory for this session */ }
-}
-
-function uniqueName(base, except) {
-  const taken = (n) => BUILTIN_NAMES.has(n) || customPresets.some((p) => p.name === n && p.name !== except);
-  if (!taken(base)) return base;
-  for (let i = 2; i < 99; i++) if (!taken(`${base} ${i}`)) return `${base} ${i}`;
-  return `${base} ${Date.now()}`;
-}
-
-function parseImport(text) {
-  let data = null;
-  try { data = JSON.parse(String(text || '')); } catch (e) { return { error: '不是合法 JSON' }; }
-  const list = Array.isArray(data) ? data
-    : (data && Array.isArray(data.presets)) ? data.presets
-      : (data && data.settings) ? [data] : null;
-  if (!list) return { error: '找不到预设数组' };
-  const out = [];
-  for (const p of list) {
-    if (!p || typeof p !== 'object') continue;
-    const name = cleanName(p.name);
-    const settings = sanitizeSettings(p.settings);
-    if (!name || !Object.keys(settings).length) continue;
-    out.push({ name, settings });
-  }
-  if (!out.length) return { error: '这里没有可用的预设' };
-  return { presets: out };
-}
-
-/* ------------------------------------------------------------- preset ui */
-
-function chipEl(p, custom, current) {
-  const b = document.createElement('button');
-  b.type = 'button';
-  // Highlight only while the settings still ARE that preset: a chip that stays
-  // lit after you drag a slider would be claiming something untrue.
-  const on = activePreset === p.name && settingsEqual(current, p.settings);
-  b.className = 'chip'
-    + (on ? ' active' : '')
-    + (armedDelete === p.name ? ' armed' : '');
-  b.dataset.preset = p.name;
-  b.title = custom ? `${p.name} · 双击改名` : `${p.name}（内置）`;
-  const label = document.createElement('span');
-  label.textContent = armedDelete === p.name ? '删除？' : p.name;
-  b.appendChild(label);
-  if (custom) {
-    const x = document.createElement('span');
-    x.className = 'x';
-    x.textContent = '×';
-    x.title = '删除（再点一次确认）';
-    b.appendChild(x);
-  }
-  return b;
-}
-
-function renderPresetUI() {
-  for (const b of dom.presetMode.children) {
-    b.setAttribute('aria-checked', String(b.dataset.mode === presetMode));
-  }
-  const current = captureSettings();
-  dom.presetChips.textContent = '';
-  for (const p of BUILTIN_PRESETS) dom.presetChips.appendChild(chipEl(p, false, current));
-  for (const p of customPresets) dom.presetChips.appendChild(chipEl(p, true, current));
-  renderPresetStatus();
-}
-
-/** Cheap enough to run on every input event: only toggles a class. */
-function refreshChipStates() {
-  const current = captureSettings();
-  for (const b of dom.presetChips.children) {
-    const p = findPreset(b.dataset.preset);
-    b.classList.toggle('active', !!p && activePreset === p.name && settingsEqual(current, p.settings));
-  }
-}
-
-function renderPresetStatus() {
-  const where = audio.isDemo() ? '演示信号' : (currentTrackKey() || '未加载音频');
-  const p = activePreset ? findPreset(activePreset) : null;
-  const el = dom.presetStatus;
-  refreshChipStates();
-  el.textContent = '';
-  el.appendChild(document.createTextNode(`${where} — `));
-  if (p) {
-    const b = document.createElement('b');
-    b.textContent = p.name;
-    el.appendChild(b);
-    if (!settingsEqual(captureSettings(), p.settings)) el.appendChild(document.createTextNode(' · 已微调'));
-  } else {
-    el.appendChild(document.createTextNode('自定义参数'));
-  }
-  if (presetMode === 'manual') el.appendChild(document.createTextNode(' · 手动'));
-}
-
-function onChipClick(ev) {
-  const b = ev.target.closest('.chip');
-  if (!b) return;
-  const name = b.dataset.preset;
-  const custom = customPresets.some((p) => p.name === name);
-  if (ev.target.closest('.x') && custom) {
-    clearTimeout(armTimer);
-    if (armedDelete === name) {
-      armedDelete = null;
-      deletePreset(name);
-    } else {
-      armedDelete = name;
-      armTimer = setTimeout(() => { armedDelete = null; renderPresetUI(); }, 3000);
-      renderPresetUI();
-    }
-    return;
-  }
-  armedDelete = null;
-  applyPreset(name);
-}
-
-function deletePreset(name) {
-  const i = customPresets.findIndex((p) => p.name === name);
-  if (i < 0) return;
-  customPresets.splice(i, 1);
-  if (activePreset === name) activePreset = null;
-  for (const k of Object.keys(trackMemory)) {
-    if (trackMemory[k].preset === name) trackMemory[k].preset = null;
-  }
-  savePresets();
-  renderPresetUI();
-  toast(`已删除「${name}」`);
-}
-
-function suggestName() {
-  for (let i = 1; i < 99; i++) if (!findPreset(`我的预设 ${i}`)) return `我的预设 ${i}`;
-  return '预设';
-}
-
-function openSaveRow(rename) {
-  editingPreset = rename || null;
-  dom.presetRow.hidden = false;
-  dom.presetName.value = rename || suggestName();
-  dom.presetName.focus();
-  dom.presetName.select();
-}
-
-function closeSaveRow() {
-  editingPreset = null;
-  dom.presetRow.hidden = true;
-}
-
-function commitSave() {
-  const wanted = cleanName(dom.presetName.value) || suggestName();
-  const settings = captureSettings();
-  if (!editingPreset && BUILTIN_NAMES.has(wanted)) {
-    toast('内置预设不能覆盖，换个名字');
-    return;
-  }
-  const name = uniqueName(wanted, editingPreset);
-  const renameFrom = editingPreset;
-  if (renameFrom) {
-    const i = customPresets.findIndex((p) => p.name === renameFrom);
-    if (i >= 0) customPresets[i] = { name, settings };
-    else customPresets.push({ name, settings });
-    if (activePreset === renameFrom) activePreset = name;
-  } else {
-    const dup = customPresets.find((p) => p.name === name);
-    if (dup) dup.settings = settings;              // same name = overwrite
-    else customPresets.push({ name, settings });
-  }
-  activePreset = name;
-  closeSaveRow();
-  savePresets();
-  renderPresetUI();
-  toast(renameFrom && renameFrom !== name ? `已重命名为「${name}」`
-    : renameFrom ? `已更新「${name}」` : `已保存「${name}」`);
-}
-
-/* The box stays out of the way until it is needed: the preset group sits at
-   the top of the panel, so an always-empty textarea would push every everyday
-   control further down the scroll for the 1 % of the time it is in use. */
-function doExport() {
-  dom.presetText.hidden = false;
-  dom.presetText.focus();
-  if (!customPresets.length) {
-    dom.presetText.value = '';
-    toast('还没有自定义预设');
-    return;
-  }
-  dom.presetText.value = JSON.stringify({ kind: EXPORT_KIND, v: 1, presets: customPresets }, null, 1);
-  dom.presetText.select();
-  toast(`已导出 ${customPresets.length} 个预设，复制这段文本即可`);
-}
-
-function doImport() {
-  if (dom.presetText.hidden) {
-    dom.presetText.hidden = false;
-    dom.presetText.value = '';
-    dom.presetText.focus();
-    toast('粘贴预设文本，再点一次「导入」');
-    return;
-  }
-  if (!dom.presetText.value.trim()) { toast('先粘贴一段预设文本'); return; }
-  const r = parseImport(dom.presetText.value);
-  if (r.error) { toast(`导入失败：${r.error}`); return; }
-  for (const p of r.presets) customPresets.push({ name: uniqueName(p.name), settings: p.settings });
-  dom.presetText.value = '';
-  dom.presetText.hidden = true;      // done with it — give the panel its space back
-  savePresets();
-  renderPresetUI();
-  toast(`已导入 ${r.presets.length} 个预设`);
-}
-
-function setPresetMode(mode) {
-  presetMode = mode === 'manual' ? 'manual' : 'auto';
-  savePresets();
-  renderPresetUI();
-  if (presetMode === 'auto') restoreTrackSettings();   // honour the memory right away
-  toast(presetMode === 'auto' ? '预设：自动（按曲记忆）' : '预设：手动');
-}
-
-function initPresets() {
-  loadPresets();
-  dom.presetChips.addEventListener('click', onChipClick);
-  dom.presetChips.addEventListener('dblclick', (ev) => {
-    const b = ev.target.closest('.chip');
-    if (b && customPresets.some((p) => p.name === b.dataset.preset)) openSaveRow(b.dataset.preset);
-  });
-  dom.presetMode.addEventListener('click', (ev) => {
-    const b = ev.target.closest('button[data-mode]');
-    if (b) setPresetMode(b.dataset.mode);
-  });
-  $('btnPresetSave').addEventListener('click', () => openSaveRow(null));
-  $('btnPresetCommit').addEventListener('click', commitSave);
-  $('btnPresetCancel').addEventListener('click', closeSaveRow);
-  $('btnPresetExport').addEventListener('click', doExport);
-  $('btnPresetImport').addEventListener('click', doImport);
-  dom.presetName.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Enter') { ev.preventDefault(); commitSave(); }
-    else if (ev.key === 'Escape') { ev.preventDefault(); closeSaveRow(); }
-  });
-  renderPresetUI();
-}
-
-
-/* -------------------------------------------------------------- keyboard */
-
 function onKey(e) {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   const t = e.target;
   const typing = t && t.closest && t.closest('input, select, textarea');
   if (typing && e.key !== 'Escape') return;
-
   switch (e.key) {
     case ' ': case 'k': case 'K':
       e.preventDefault(); togglePlay(); break;
@@ -3424,8 +3473,6 @@ function onKey(e) {
   }
 }
 
-/* ------------------------------------------------------- drag & drop + idle */
-
 function bindDragDrop() {
   let depth = 0;
   window.addEventListener('dragenter', (e) => {
@@ -3447,7 +3494,6 @@ function bindDragDrop() {
       addLocalFiles(e.dataTransfer.files);
     }
   });
-
   // hide the chrome when the pointer is idle and not over any control
   let idleTimer = 0;
   let overUI = false;
@@ -3473,6 +3519,105 @@ function bindDragDrop() {
   window.addEventListener('pointerdown', wake, { passive: true });
   wake();
 }
+
+
+
+__exp.bindAudioEvents = bindAudioEvents;
+__exp.bindControls = bindControls;
+__exp.bindDragDrop = bindDragDrop;
+__exp.onKey = onKey;
+__exp.resetSettings = resetSettings;
+__exp.screenshot = screenshot;
+__exp.setPerfMode = setPerfMode;
+__exp.togglePanel = togglePanel;
+__exp.uiCache = uiCache;
+__exp.updateTransportUI = updateTransportUI;
+});
+
+/* ---- js/main.js ---------------------------------------------------- */
+__define("js/main.js", function (__exp, __req) {
+const core = __req("js/core.js");
+const audio = __req("js/audio.js");
+const render = __req("js/render.js");
+const ui = __req("js/ui.js");
+const playlist = __req("js/playlist.js");
+const presets = __req("js/presets.js");
+const apply = __req("js/apply.js");
+
+const {
+  syncControlsFromState,
+} = apply;
+
+const {
+  initPresets,
+} = presets;
+
+const {
+  loadServerTracks,
+  loadTrack,
+  play,
+  reloadCurrentSource,
+  renderPlaylist,
+  setDemo,
+  tracks,
+} = playlist;
+
+const {
+  bindAudioEvents,
+  bindControls,
+  bindDragDrop,
+  updateTransportUI,
+} = ui;
+
+const {
+  $,
+  MAXN,
+  S,
+  dom,
+  toast,
+} = core;
+const {
+  applyAnalyserSize,
+  applyRateMode,
+  currentAnalysers,
+  desiredRate,
+  resumeContext,
+  signal,
+} = audio;
+const {
+  layout,
+  resetWorkStats,
+  scaleLabel,
+  state,
+  updatePerfBadge,
+} = render;
+
+/* ============================================================================
+ *  Web Oscilloscope Music Player / Visualizer
+ *  ---------------------------------------------------------------------------
+ *  Renders a stereo signal as an X/Y beam path:  left channel -> X, right -> Y.
+ *
+ *  DESIGN CONSTRAINTS (explicitly requested)
+ *  ---------------------------------------------------------------------------
+ *  1. NO RETRACE LINES (无回扫线)
+ *     - A trace path is never `closePath()`d, so the beam never jumps from the
+ *       end of a sweep back to its start.
+ *     - Every frame starts a fresh sub-path with `moveTo()`; segments are never
+ *       joined across analysis frames, so no wrap-around chord is ever drawn.
+ *     - Optional VELOCITY BLANKING dims fast beam movements (brightness ∝ 1/v).
+ *       Retrace/blanking sweeps in oscilloscope music are fast, so they fade to
+ *       near-invisible exactly as they do on a real CRT — this is the principled
+ *       way to kill retrace lines, not a post-process trick.
+ *
+ *  2. NO GLOW (无辉光)
+ *     - No `shadowBlur` / `shadowColor`, no bloom pass.
+ *     - No `globalCompositeOperation = 'lighter'` (additive) accumulation.
+ *     - No CSS blur/drop-shadow filter anywhere near the canvas.
+ *     - Afterglow uses `destination-out` alpha decay: pixels only ever get
+ *       *dimmer*, they never add brightness to their neighbours.
+ * ========================================================================== */
+
+
 
 /* ------------------------------------------------------------ debug seam */
 
@@ -3554,7 +3699,6 @@ async function init() {
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
 else init();
-
 });
 
 __req("js/main.js");

@@ -73,6 +73,10 @@ const winSize = () => WINDOW_CHOICES[clamp(S.windowIdx | 0, 0, WINDOW_CHOICES.le
  *  on render.js (render depends on audio for the samples). */
 const flags = { redraw: true, settle: 0 };
 
+/** The keys a preset carries. rateMode and renderScale describe the machine you
+ *  happen to be on, so a preset must not carry them to someone else's laptop. */
+const PRESET_KEYS = Object.keys(DEFAULTS).filter((k) => k !== 'rateMode' && k !== 'renderScale');
+
 const FORMATTERS = {
   gainX: (v) => Number(v).toFixed(2),
   gainY: (v) => Number(v).toFixed(2),
@@ -136,6 +140,7 @@ export {
   winSize,
   PRESET_COLORS,
   flags,
+  PRESET_KEYS,
   FORMATTERS,
   dom,
   toast,

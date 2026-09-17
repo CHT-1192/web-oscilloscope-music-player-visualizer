@@ -3,7 +3,17 @@ import * as core from './core.js';
 /* The audio graph: one AudioContext whose sample rate is matched to the file,
    two analysers fed by a channel splitter, and the built-in demo oscillators.
    Nothing here knows about pixels, panels or presets. */
-const { $, clamp, MAXN, S, dom, winSize, flags, toast, FORMATTERS } = core;
+const {
+  $,
+  FORMATTERS,
+  MAXN,
+  S,
+  clamp,
+  dom,
+  flags,
+  toast,
+  winSize,
+} = core;
 
 /* ----------------------------------------------------------- audio graph */
 
