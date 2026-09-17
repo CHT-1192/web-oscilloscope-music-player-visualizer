@@ -63,10 +63,15 @@
   const MAXN = 32768;          // analyser fftSize — the largest window we can show
   const BUCKETS = 10;          // velocity-blanking brightness levels (bucket 0 = blanked)
 
-  /* The defaults sit halfway between the two shipped recipes (描边 and 填充, see
-     the table in README): one wants a small window and a short afterglow, the
-     other a large window and a long afterglow, and a first-time visitor is
-     playing some track neither of us has heard. Midpoint, not an extreme.
+  /* The defaults are the midpoint of the two shipped recipes (描边 / 填充, see
+     the table in README) — a trade-off, not an optimum. The optimum really does
+     depend on the track; that is what the presets are for.
+     What is NOT a trade-off is the blow-out bound, and that one is measured.
+     Sweeping window x afterglow over the busiest passage of a line-type track,
+     24 % keeps the saturated share at 0.66 % of the ink, whereas 62 % (the old
+     default) pushed it to 5.3 % at 2048 and 12.8 % at 4096 — a picture that has
+     dissolved into a solid mass. 2048 is the largest window that still stays
+     under ~1 %, because a 4096 window already self-overlaps within one frame.
        窗口 (1 + 3) / 2 = 2 · 余辉 (16 + 32) / 2 = 24 · 线宽 (1.15 + 2.3) / 2 ≈ 1.75 */
   const DEFAULTS = {
     gainX: 1, gainY: 1, offX: 0, offY: 0,

@@ -671,6 +671,49 @@ async function renderTests(pw) {
 
   await page.screenshot({ path: path.join(SHOTS, 'live-audio.png') });
 
+  /* ---- the shipped defaults must not blow the picture out ---------------
+     The old default (4096 window / 62 % afterglow) put 12.8 % of the lit ink
+     at alpha 255 on this passage: the figure had dissolved into a solid mass.
+     That number is what makes "no universal best" a measurement rather than an
+     excuse, so pin it. The chip is clicked instead of writing the defaults
+     into the test — a copy of DEFAULTS here is exactly how the last default
+     change turned into a confusing failure. */
+  await page.evaluate(() => {
+    const b = document.querySelector('#presetChips .chip[data-preset="默认"]');
+    if (b) b.click();
+    document.getElementById('audio').currentTime = 20;      // the busy cube passage
+  });
+  await page.waitForTimeout(6000);
+  const exposure = await page.evaluate(() => {
+    const st = window.__scope.state;
+    const c = document.getElementById('trace');
+    const x = Math.round(st.plot.x);
+    const y = Math.round(st.plot.y);
+    const s = Math.round(st.plot.size);
+    const d = c.getContext('2d').getImageData(x, y, s, s).data;
+    let lit = 0, blown = 0;
+    for (let i = 3; i < d.length; i += 4) {
+      if (d[i] > 8) { lit++; if (d[i] >= 250) blown++; }
+    }
+    return {
+      lit,
+      cover: +((lit / (s * s)) * 100).toFixed(2),
+      blown: lit ? +((blown / lit) * 100).toFixed(2) : 0,
+    };
+  });
+  /* The bound is 3 % rather than the 0.7 % this setting measures in isolation:
+     the saturated share depends on the plot size (a smaller plot packs the same
+     segments into fewer pixels and self-overlaps more), so it is not a pure
+     function of the settings. 3 % still rejects the old default by 4x, which is
+     the thing this check exists to catch. */
+  if (exposure.lit > 500 && exposure.blown < 3) {
+    ok('the default settings do not blow the picture out',
+      `cover ${exposure.cover}%, ${exposure.blown}% of the ink at alpha 255`);
+  } else {
+    bad('the default settings do not blow the picture out',
+      `cover ${exposure.cover}%, ${exposure.blown}% saturated — the old default measured 12.8%`);
+  }
+
   /* ---- regression: a paused <audio> feeds the analysers silence, so the
      renderer must keep painting its last captured window instead of
      re-reading them (that bug blanked the screen on pause). -------------- */
