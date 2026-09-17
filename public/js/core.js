@@ -67,6 +67,27 @@ const DEFAULTS = {
 const S = Object.assign({}, DEFAULTS);
 const winSize = () => WINDOW_CHOICES[clamp(S.windowIdx | 0, 0, WINDOW_CHOICES.length - 1)];
 
+/** Flags any module may set and only the render loop clears.
+ *  They live here, not in render.js, because the audio graph, the settings
+ *  bridge and the UI all invalidate the picture — and audio.js must not depend
+ *  on render.js (render depends on audio for the samples). */
+const flags = { redraw: true, settle: 0 };
+
+const FORMATTERS = {
+  gainX: (v) => Number(v).toFixed(2),
+  gainY: (v) => Number(v).toFixed(2),
+  offX: (v) => Number(v).toFixed(2),
+  offY: (v) => Number(v).toFixed(2),
+  windowIdx: () => winSize().toLocaleString('en-US'),
+  intensity: (v) => Number(v).toFixed(2),
+  lineWidth: (v) => Number(v).toFixed(2) + ' px',
+  persistence: (v) => Math.round(v) + ' %',
+  burnIn: (v) => (v <= 0 ? '关' : v >= 99.5 ? '永久' : Math.round(v) + ' %'),
+  residue: (v) => (v <= 0 ? '关' : Math.round(v) + ' %'),
+  blankRatio: (v) => (Number.isInteger(v) ? String(v) : v.toFixed(1)) + '×',
+  color: (v) => String(v).toUpperCase(),
+};
+
 const PRESET_COLORS = ['#3dff9c', '#7ef9ff', '#ffd166', '#ff6b8a', '#c4a7ff', '#eef4f2'];
 /* -------------------------------------------------------------------- dom */
 
@@ -114,6 +135,8 @@ export {
   S,
   winSize,
   PRESET_COLORS,
+  flags,
+  FORMATTERS,
   dom,
   toast,
   setHint,

@@ -136,7 +136,30 @@ function loadModule(id, seen) {
 
   for (const { target } of mod.imports) loadModule(target, seen);
   mod.body = out.join('\n');
+  mod.deps = seen;
+  validateAliases(mod);
   return mod;
+}
+
+/** Every `const { a, b } = ns;` an author writes must name something the target
+ *  module actually exports. Real ESM fails this at link time; an inliner would
+ *  quietly bind `undefined` and fail later, somewhere else. */
+function validateAliases(mod) {
+  const nsToId = new Map(mod.imports.map((i) => [i.ns, i.target]));
+  const re = /const \{\n([\s\S]*?)\n\} = ([A-Za-z_$][\w$]*);/g;
+  for (const m of mod.body.matchAll(re)) {
+    const target = nsToId.get(m[2]);
+    if (!target) continue;                       // not a module namespace
+    const targetExports = new Set((mod.deps.get(target) || { exports: [] }).exports);
+    for (const line of m[1].split('\n')) {
+      const name = line.trim().replace(/,$/, '');
+      if (!name) continue;
+      if (!targetExports.has(name)) {
+        throw new Error(`${mod.id}: \`${name}\` is not exported by ${target} — `
+          + 'a stale alias would silently be undefined in the inlined build');
+      }
+    }
+  }
 }
 
 /** Depth-first topological order, rejecting cycles outright. */

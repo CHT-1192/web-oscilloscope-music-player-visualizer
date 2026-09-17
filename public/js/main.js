@@ -1,27 +1,86 @@
 import * as core from './core.js';
+import * as audio from './audio.js';
+import * as render from './render.js';
 
-/* Named aliases for the leaves, so the body below reads exactly as it did when
-   this was one file. Every one of these is a function or a shared object — no
-   primitive that changes over time, which is what keeps the alias honest. */
 const {
   $,
-  clamp,
-  TAU,
-  fmtBytes,
-  fmtTime,
-  fmtHz,
-  stamp,
-  WINDOW_CHOICES,
-  MAXN,
   BUCKETS,
   DEFAULTS,
-  S,
-  winSize,
+  FORMATTERS,
+  MAXN,
   PRESET_COLORS,
+  S,
+  TAU,
+  WINDOW_CHOICES,
+  clamp,
   dom,
-  toast,
+  flags,
+  fmtBytes,
+  fmtHz,
+  fmtTime,
   setHint,
+  stamp,
+  toast,
+  winSize,
 } = core;
+const {
+  applyAnalyserSize,
+  applyRateMode,
+  buildDemo,
+  buildEngine,
+  clampRate,
+  currentAnalysers,
+  desiredRate,
+  ensureEngineRate,
+  ensureGraph,
+  isDemo,
+  isLive,
+  makeAnalyser,
+  rateText,
+  readSignal,
+  resumeContext,
+  setDemoSource,
+  setElementHook,
+  setSourceRate,
+  signal,
+  status,
+  teardownEngine,
+  updateRateBadge,
+} = audio;
+const {
+  adaptQuality,
+  applyScale,
+  clearBurnIn,
+  composite,
+  drawBackground,
+  drawTrace,
+  effectiveDpr,
+  fadeAlpha,
+  fadeLayer,
+  findTrigger,
+  hexToRgb,
+  layout,
+  loop,
+  paintInto,
+  panelInset,
+  recordWork,
+  resetQuality,
+  resetRefSpeed,
+  resetTraceState,
+  resetWorkStats,
+  resettle,
+  resizeKeeping,
+  scaleLabel,
+  scrubAlpha,
+  setTickHandler,
+  startLoop,
+  state,
+  updateBurnIn,
+  updatePerfBadge,
+  workSorted,
+  workStat,
+  workTrimmed,
+} = render;
 
 /* ============================================================================
  *  Web Oscilloscope Music Player / Visualizer
@@ -80,610 +139,6 @@ let recordTimer = 0;
 let armTimer = 0;
 
 
-const bctx = dom.bg.getContext('2d');
-const nctx = dom.burnin.getContext('2d');   // burn-in layer
-const tctx = dom.trace.getContext('2d');
-
-/* --------------------------------------------------------------- geometry */
-
-let W = 0, H = 0, DPR = 1;          // canvas size, in device pixels
-let PLOT = 0, PLOT_X = 0, PLOT_Y = 0; // square plotting area (keeps circles round)
-
-/* Adaptive resolution. Canvas cost scales with pixel count, so on a slow
-   machine the cheapest big win is to render fewer pixels and let the browser
-   upscale. autoScale drops (and recovers) in 1/8 steps based on measured
-   render time; it never goes below 0.5. */
-const SCALE_MIN = 0.5;
-let autoScale = 1;
-let workAvg = 0;            // ms spent inside the render section, smoothed
-let workP50 = 0;            // median of the rolling window
-let qualityCooldown = 0;
-let workStatCountdown = 30;
-
-/* Rolling window of per-frame render times.
- *
- *  performance.now() is quantised to 100 us in Chrome, which is coarser than
- *  the differences worth measuring, so no single sample is useful. Two
- *  properties make the window work anyway:
- *    - averaging many quantised samples recovers sub-quantum resolution;
- *    - background load (another app, a compile) can only ever ADD slow
- *      frames, so it shows up purely as a right tail.
- *  So `trimmed()` — the mean of the fastest quarter — is both sub-quantum
- *  accurate and insensitive to whatever else the machine is doing.
- *
- *  Keep the window SHORT (~2 s): a long one both slows the quality
- *  adaptation down and, when a measurement starts, is still full of stale
- *  frames from before the change. */
-const WORK_RING = new Float32Array(120);
-const WORK_SORT = new Float32Array(120);
-let workPos = 0;
-let workFilled = 0;
-
-function recordWork(ms) {
-  WORK_RING[workPos] = ms;
-  workPos = (workPos + 1) % WORK_RING.length;
-  if (workFilled < WORK_RING.length) workFilled++;
-}
-
-function resetWorkStats() {
-  workPos = 0;
-  workFilled = 0;
-  workAvg = 0;
-  workP50 = 0;
-}
-
-function workSorted() {
-  WORK_SORT.set(WORK_RING.subarray(0, workFilled));
-  const a = WORK_SORT.subarray(0, workFilled);
-  a.sort();
-  return a;
-}
-
-function workStat(p) {
-  if (!workFilled) return 0;
-  const a = workSorted();
-  return a[Math.min(workFilled - 1, Math.floor(p * (workFilled - 1)))];
-}
-
-/** Mean of the fastest `q` fraction — the load-proof cost estimate. */
-function workTrimmed(q) {
-  if (!workFilled) return 0;
-  const a = workSorted();
-  const n = Math.max(1, Math.floor(workFilled * q));
-  let s = 0;
-  for (let i = 0; i < n; i++) s += a[i];
-  return s / n;
-}
-
-function effectiveDpr() {
-  const base = clamp(window.devicePixelRatio || 1, 1, 3);
-  const mul = S.renderScale === 'auto' ? autoScale : Number(S.renderScale);
-  return clamp(base * (Number.isFinite(mul) && mul > 0 ? mul : 1), 0.4, 3);
-}
-
-/** How far the open side panels reach into the stage, in CSS px. The canvas
- *  itself is never resized for a panel; only the PLOT gives up room, and only
- *  as much as it must. On a wide window the square plot has a margin wide
- *  enough to hide a whole panel, so nothing moves at all. */
-function panelInset() {
-  const stage = dom.stage.getBoundingClientRect();
-  if (!stage.width) return 0;
-  const mid = (stage.left + stage.right) / 2;
-  let inset = 0;
-  for (const el of [dom.panelList, dom.panelSettings]) {
-    if (!el || !el.classList.contains('open')) continue;
-    const r = el.getBoundingClientRect();
-    // measure the intrusion from the edge the panel actually sits on
-    const onRight = (r.left + r.right) / 2 > mid;
-    inset = Math.max(inset, onRight ? stage.right - r.left : r.right - stage.left);
-  }
-  return Math.max(0, inset);
-}
-
-let lastInset = -1;
-
-function layout() {
-  const rect = dom.stage.getBoundingClientRect();
-  const dpr = effectiveDpr();
-  const w = Math.max(2, Math.round((rect.width || window.innerWidth) * dpr));
-  const h = Math.max(2, Math.round((rect.height || window.innerHeight) * dpr));
-  const inset = panelInset();
-  if (w === W && h === H && dpr === DPR && inset === lastInset) return false;
-  lastInset = inset;
-
-  DPR = dpr; W = w; H = h;
-  dom.bg.width = W; dom.bg.height = H;           // redrawn from scratch below
-  resizeKeeping(dom.burnin, nctx);
-  resizeKeeping(dom.trace, tctx);
-
-  // Stay centred in the canvas and only shrink when a panel genuinely does
-  // not fit in the margin beside the plot. Using max() rather than the sum
-  // keeps it centred, so opening one panel never shoves the plot sideways.
-  const margin = inset * dpr;
-  PLOT = Math.max(64 * dpr, Math.min(H * 0.9, (W - 2 * margin) * 0.96));
-  PLOT_X = (W - PLOT) / 2;
-  PLOT_Y = (H - PLOT) / 2;
-
-  drawBackground();
-  return true;
-}
-
-/** Resize a canvas without throwing away what is already on it.
- *  Assigning canvas.width clears the bitmap, which would silently destroy the
- *  accumulated afterglow / burn-in on every window resize or fullscreen
- *  toggle — and the whole point of those layers is that they persist. */
-function resizeKeeping(canvas, ctx) {
-  const ow = canvas.width, oh = canvas.height;
-  if (!ow || !oh) { canvas.width = W; canvas.height = H; return; }
-  const off = document.createElement('canvas');
-  off.width = ow; off.height = oh;
-  off.getContext('2d').drawImage(canvas, 0, 0);
-  canvas.width = W; canvas.height = H;
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.globalAlpha = 1;
-  ctx.globalCompositeOperation = 'source-over';
-  ctx.drawImage(off, 0, 0, ow, oh, 0, 0, W, H);   // rescaled to the new size
-}
-
-/** Force a fresh layout after the resolution changed. */
-function applyScale() {
-  W = 0; H = 0;
-  if (layout()) { needsRedraw = true; settle = 100; }
-  updatePerfBadge();
-  const out = document.querySelector('[data-out="renderScale"]');
-  if (out) {
-    out.textContent = scaleLabel();
-    out.title = `画布 ${W}×${H} 设备像素`;
-  }
-}
-
-const scaleLabel = () => `${Math.round(effectiveDpr() * 100)}%`;
-
-function updatePerfBadge() {
-  const el = $('perfBadge');
-  if (!el) return;
-  const reduced = S.renderScale === 'auto' && autoScale < 1;
-  el.textContent = `画质 ${Math.round(autoScale * 100)}%`;
-  el.className = 'rate-badge perf-badge' + (reduced ? ' is-warn' : '');
-  el.hidden = !reduced;
-}
-
-/** Shrink the render target when a frame costs too much, grow it back when
- *  there is headroom.
- *
- *  Driven by the MEDIAN of a rolling window rather than a mean: a single
- *  slow frame (GC pause, another app on the machine, a compile in the
- *  background) should not trigger a resolution drop, and the median is what
- *  a mean cannot give us. */
-function adaptQuality(workMs) {
-  recordWork(workMs);
-  workAvg += (workMs - workAvg) * 0.08;
-
-  if (qualityCooldown > 0) qualityCooldown--;
-  if (--workStatCountdown > 0) return;
-  workStatCountdown = 30;
-
-  workP50 = workTrimmed(0.5);
-  updatePerfBadge();
-  if (S.renderScale !== 'auto' || qualityCooldown > 0) return;
-
-  if (workP50 > 10 && autoScale > SCALE_MIN) {
-    autoScale = Math.max(SCALE_MIN, autoScale - 0.125);
-    qualityCooldown = 120;
-    applyScale();
-  } else if (workP50 < 3.5 && autoScale < 1) {
-    autoScale = Math.min(1, autoScale + 0.125);
-    qualityCooldown = 120;
-    applyScale();
-  }
-}
-
-/* --------------------------------------------------- static background/grid */
-
-function hexToRgb(hex) {
-  let h = String(hex || '').trim().replace(/^#/, '');
-  if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
-  const n = parseInt(h, 16);
-  if (h.length !== 6 || !Number.isFinite(n)) return { r: 120, g: 190, b: 175 };
-  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
-}
-
-function drawBackground() {
-  const g = bctx;
-  // Graticule inherits the beam colour so it never clashes with it.
-  const c = hexToRgb(S.color);
-  const tint = (a) => `rgba(${c.r},${c.g},${c.b},${a})`;
-
-  g.setTransform(1, 0, 0, 1, 0, 0);
-  g.globalAlpha = 1;
-  g.globalCompositeOperation = 'source-over';
-  g.clearRect(0, 0, W, H);
-
-  g.fillStyle = '#03060a';
-  g.fillRect(0, 0, W, H);
-
-  // Vignette: the edges are simply *darker* than the centre. Nothing here
-  // adds light around the beam, so it cannot read as glow.
-  const vg = g.createRadialGradient(W / 2, H / 2, PLOT * 0.15, W / 2, H / 2, Math.max(W, H) * 0.78);
-  vg.addColorStop(0, 'rgba(13,24,28,0.92)');
-  vg.addColorStop(0.55, 'rgba(6,11,15,0.92)');
-  vg.addColorStop(1, 'rgba(0,0,0,1)');
-  g.fillStyle = vg;
-  g.fillRect(0, 0, W, H);
-
-  if (!S.grid) return;
-
-  const lw = Math.max(1, Math.round(DPR));
-  const snap = (v) => (lw % 2 ? Math.round(v) + 0.5 : Math.round(v));
-  const DIV = 10;
-  const x0 = PLOT_X, y0 = PLOT_Y, s = PLOT;
-  const x1 = x0 + s, y1 = y0 + s;
-
-  g.lineWidth = lw;
-
-  // fine graticule
-  g.strokeStyle = tint(0.07);
-  g.beginPath();
-  for (let i = 1; i < DIV; i++) {
-    const px = snap(x0 + (s * i) / DIV);
-    const py = snap(y0 + (s * i) / DIV);
-    g.moveTo(px, snap(y0)); g.lineTo(px, snap(y1));
-    g.moveTo(snap(x0), py); g.lineTo(snap(x1), py);
-  }
-  g.stroke();
-
-  // centre axes
-  g.strokeStyle = tint(0.17);
-  g.beginPath();
-  g.moveTo(snap(x0 + s / 2), snap(y0)); g.lineTo(snap(x0 + s / 2), snap(y1));
-  g.moveTo(snap(x0), snap(y0 + s / 2)); g.lineTo(snap(x1), snap(y0 + s / 2));
-  g.stroke();
-
-  // frame
-  g.strokeStyle = tint(0.24);
-  g.strokeRect(snap(x0), snap(y0), Math.round(s), Math.round(s));
-
-  // edge ticks
-  g.strokeStyle = tint(0.30);
-  g.beginPath();
-  const tick = 5 * DPR;
-  const N = DIV * 5;
-  for (let i = 1; i < N; i++) {
-    const p = (s * i) / N;
-    const len = i % 5 === 0 ? tick * 1.7 : tick;
-    const px = snap(x0 + p), py = snap(y0 + p);
-    g.moveTo(px, snap(y0)); g.lineTo(px, snap(y0 + len));
-    g.moveTo(px, snap(y1)); g.lineTo(px, snap(y1 - len));
-    g.moveTo(snap(x0), py); g.lineTo(snap(x0 + len), py);
-    g.moveTo(snap(x1), py); g.lineTo(snap(x1 - len), py);
-  }
-  g.stroke();
-
-  // axis captions
-  g.fillStyle = tint(0.34);
-  g.font = `${Math.round(9.5 * DPR)}px ui-monospace, SFMono-Regular, Menlo, monospace`;
-  g.textBaseline = 'top';
-  g.fillText('X ← L', snap(x0 + 8), snap(y0 + 6));
-  g.textBaseline = 'bottom';
-  g.fillText('Y ← R', snap(x0 + 8), snap(y1 - 6));
-}
-
-/* ----------------------------------------------------------- audio graph */
-
-/*  Sample-rate policy
- *  ------------------
- *  A WebAudio graph runs at exactly one rate, and a MediaElementAudioSource
- *  resamples decoded media into it. A default AudioContext runs at the
- *  *device* rate (48 kHz on most machines), so a 192 kHz FLAC would be
- *  resampled down and everything above 24 kHz thrown away.
- *
- *  Verified against an independent ffmpeg decode of the bundled FLAC: when
- *  the context rate equals the file's own rate, the analyser returns the
- *  file's samples BIT-FOR-BIT (residual exactly 0, max|diff| 0). So by
- *  default the context is built at the source's native rate and nothing is
- *  resampled on the visual path.
- *
- *  (The OS still resamples the final output for your speakers. That is
- *  unavoidable — the device runs at 48 kHz — and it cannot affect what is
- *  drawn, because the analysers tap the graph, not the output.)
- */
-const RATE_MIN = 8000;
-const RATE_MAX = 384000;
-
-let ac = null;
-let engineWanted = 0;                       // rate requested; 0 = device default
-let sourceRate = 0;                         // native rate of loaded media; 0 = unknown
-let mediaSrc = null, splitter = null, zeroGain = null;
-let anL = null, anR = null;                 // analysers fed by the <audio> element
-let demoAnL = null, demoAnR = null;         // analysers fed by the built-in synth
-let demo = null;                            // demo synth nodes
-let demoBuilt = false;
-let source = 'media';                       // 'media' | 'demo'
-let useFloat = true;
-let audioDead = false;                      // set once the graph can't be built
-
-const bufL = new Float32Array(MAXN);
-const bufR = new Float32Array(MAXN);
-const byteL = new Uint8Array(MAXN);
-const byteR = new Uint8Array(MAXN);
-
-/* The analyser buffer is sized to the visible window, not always 32768.
-   Copying 32768 samples x 2 channels 60 times a second is pure waste when
-   only 4096 are ever drawn — and it is 4x (or 32x) more memory traffic. */
-let analyserSize = 0;
-let viewL = bufL;
-let viewR = bufR;
-let viewBL = byteL;
-let viewBR = byteR;
-
-const pow2ceil = (v) => {
-  let p = 1024;
-  while (p < v && p < MAXN) p <<= 1;
-  return clamp(p, 1024, MAXN);
-};
-
-/** fftSize = 2x the window: enough for the window plus trigger search room. */
-function applyAnalyserSize() {
-  const want = pow2ceil(winSize() * 2);
-  if (want === analyserSize) return;
-  analyserSize = want;
-  viewL = bufL.subarray(0, want);
-  viewR = bufR.subarray(0, want);
-  viewBL = byteL.subarray(0, want);
-  viewBR = byteR.subarray(0, want);
-  for (const a of [anL, anR, demoAnL, demoAnR]) {
-    if (a && a.fftSize !== want) a.fftSize = want;
-  }
-}
-
-function clampRate(r) {
-  return Number.isFinite(r) && r >= RATE_MIN && r <= RATE_MAX ? Math.round(r) : 0;
-}
-
-const rateText = (r) => `${r % 1000 === 0 ? r / 1000 : (r / 1000).toFixed(1)} kHz`;
-
-/** Which context rate the current settings + source call for (0 = device). */
-function desiredRate() {
-  if (S.rateMode === 'device') return 0;
-  if (S.rateMode === 'auto') return sourceRate ? clampRate(sourceRate) : 0;
-  return clampRate(Number(S.rateMode));
-}
-
-function makeAnalyser() {
-  const a = ac.createAnalyser();
-  a.fftSize = analyserSize || MAXN;
-  a.smoothingTimeConstant = 0;   // time-domain data is unaffected, but be explicit
-  return a;
-}
-
-function teardownEngine() {
-  try { if (demo) { demo.ox.stop(); demo.oy.stop(); } } catch (e) { /* ignore */ }
-  demo = null; demoBuilt = false; demoAnL = demoAnR = null;
-  try { if (mediaSrc) mediaSrc.disconnect(); } catch (e) { /* ignore */ }
-  try { if (zeroGain) zeroGain.disconnect(); } catch (e) { /* ignore */ }
-  try { if (ac) ac.close(); } catch (e) { /* ignore */ }
-  ac = null; mediaSrc = splitter = zeroGain = anL = anR = null;
-  engineWanted = 0;
-}
-
-/** Build a fresh context at `want` Hz (0 = device default).
- *  createMediaElementSource may only ever be called once per element, so the
- *  <audio> element has to be replaced together with the context. */
-function buildEngine(want) {
-  if (audioDead) return null;
-  const AC = window.AudioContext || window.webkitAudioContext;
-  if (!AC) { audioDead = true; toast('此浏览器不支持 Web Audio API'); return null; }
-
-  const prev = dom.audio;
-  const el = document.createElement('audio');
-  el.id = 'audio';
-  el.preload = 'metadata';
-  el.volume = prev ? prev.volume : Number(dom.volume.value);
-  el.preservesPitch = true;
-  el.playbackRate = Number(dom.rate.value) || 1;
-
-  teardownEngine();
-
-  if (prev && prev.parentNode) prev.replaceWith(el);
-  else document.body.appendChild(el);
-  dom.audio = el;
-  bindAudioEvents(el);
-
-  let ctx;
-  let actual = want;
-  try {
-    ctx = want ? new AC({ sampleRate: want }) : new AC();
-  } catch (err) {
-    // rate rejected by this browser/platform — fall back to the device rate
-    actual = 0;
-    try {
-      ctx = new AC();
-    } catch (err2) {
-      audioDead = true;
-      toast('音频初始化失败：' + err2.message);
-      return null;
-    }
-  }
-
-  ac = ctx;
-  engineWanted = actual;
-  useFloat = typeof AnalyserNode.prototype.getFloatTimeDomainData === 'function';
-
-  mediaSrc = ac.createMediaElementSource(el);
-  splitter = ac.createChannelSplitter(2);
-  anL = makeAnalyser();
-  anR = makeAnalyser();
-
-  mediaSrc.connect(splitter);
-  splitter.connect(anL, 0);
-  splitter.connect(anR, 1);
-  mediaSrc.connect(ac.destination);
-
-  // Analysers with no downstream connection can be starved of processing in
-  // some engines. A zero-gain path to the destination keeps them pulled
-  // without adding any audible (or visible) signal.
-  zeroGain = ac.createGain();
-  zeroGain.gain.value = 0;
-  anL.connect(zeroGain);
-  anR.connect(zeroGain);
-  zeroGain.connect(ac.destination);
-
-  updateRateBadge();
-  needsRedraw = true;
-  return ac;
-}
-
-function ensureGraph() {
-  if (ac) return ac;
-  if (audioDead) return null;
-  return buildEngine(desiredRate());
-}
-
-function resumeContext() {
-  const ctx = ensureGraph();
-  if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {});
-  return ctx;
-}
-
-/** A brand new source is about to be loaded, so there is nothing to preserve. */
-function ensureEngineRate() {
-  if (audioDead) return;
-  const want = desiredRate();
-  if (!ac || want !== engineWanted) buildEngine(want);
-  updateRateBadge();
-}
-
-/** The rate *setting* changed — keep the position and play state. */
-function applyRateMode() {
-  if (audioDead) return;
-  const want = desiredRate();
-  if (ac && want === engineWanted) { updateRateBadge(); return; }
-
-  const t = tracks[curIndex];
-  const time = ac && t ? (dom.audio.currentTime || 0) : 0;
-  const playing = ac && t ? (!dom.audio.paused && !dom.audio.ended) : false;
-  const wasDemo = source === 'demo';
-
-  buildEngine(want);
-
-  if (wasDemo) {
-    setDemo(true);
-  } else if (t) {
-    dom.audio.src = t.url;
-    if (time > 0.05) {
-      const onMeta = () => {
-        dom.audio.removeEventListener('loadedmetadata', onMeta);
-        try { dom.audio.currentTime = time; } catch (e) { /* ignore */ }
-        if (playing) play();
-      };
-      dom.audio.addEventListener('loadedmetadata', onMeta);
-    } else if (playing) {
-      play();
-    }
-  }
-  updateRateBadge();
-  needsRedraw = true;
-}
-
-/** Small always-visible readout: is the engine native to this file? */
-function updateRateBadge() {
-  const el = $('rateBadge');
-  if (!el) return;
-  const eng = ac ? ac.sampleRate : 0;
-
-  // the window readout is a sample count; its duration depends on the rate
-  const out = document.querySelector('[data-out="windowIdx"]');
-  if (out) {
-    out.textContent = FORMATTERS.windowIdx();
-    out.title = `${((winSize() / (eng || 48000)) * 1000).toFixed(1)} ms`;
-  }
-
-  if (!eng) { el.textContent = '—'; el.className = 'rate-badge'; el.title = ''; return; }
-  if (!sourceRate) {
-    el.textContent = `${rateText(eng)} 引擎`;
-    el.className = 'rate-badge';
-    el.title = '当前音频引擎采样率（未载入音频，无从判断是否重采样）';
-    return;
-  }
-  const native = eng === sourceRate;
-  el.textContent = native
-    ? `${rateText(eng)} 原生`
-    : `${rateText(eng)} ← ${rateText(sourceRate)} 重采样`;
-  el.className = 'rate-badge ' + (native ? 'is-native' : 'is-resampled');
-  el.title = native
-    ? `引擎与音频文件同为 ${sourceRate} Hz：分析器读到的是文件原始采样点，没有重采样`
-    : `音频文件是 ${sourceRate} Hz，被重采样到 ${eng} Hz`;
-}
-
-function currentAnalysers() {
-  if (source === 'demo') return demoAnL && demoAnR ? [demoAnL, demoAnR] : null;
-  return anL && anR ? [anL, anR] : null;
-}
-
-/* ------------------------------------------------------- built-in demo sig */
-
-/* Two oscillators at a 3:2 ratio drive a clean Lissajous figure. Handy for
-   checking the renderer (and for tuning gain / persistence) with no file. */
-function buildDemo() {
-  if (demoBuilt || !ac) return;
-  const merger = ac.createChannelMerger(2);
-  const gx = ac.createGain(); gx.gain.value = 0.85;
-  const gy = ac.createGain(); gy.gain.value = 0.85;
-  const ox = ac.createOscillator(); ox.type = 'sine'; ox.frequency.value = 45; // X
-  const oy = ac.createOscillator(); oy.type = 'sine'; oy.frequency.value = 30; // Y
-  const dsp = ac.createChannelSplitter(2);
-
-  ox.connect(gx); gx.connect(merger, 0, 0);
-  oy.connect(gy); gy.connect(merger, 0, 1);
-  merger.connect(dsp);
-  demoAnL = makeAnalyser();
-  demoAnR = makeAnalyser();
-  dsp.connect(demoAnL, 0);
-  dsp.connect(demoAnR, 1);
-  demoAnL.connect(zeroGain);
-  demoAnR.connect(zeroGain);
-
-  ox.start(); oy.start();   // silent: everything reaches the output through zeroGain
-  demo = { merger, dsp, gx, gy, ox, oy };
-  demoBuilt = true;
-}
-
-function setDemo(on) {
-  const ctx = resumeContext();
-  if (!ctx) return;
-  buildDemo();
-  if (on) {
-    try { demo.merger.connect(demo.dsp); } catch (e) { /* already connected */ }
-    source = 'demo';
-    dom.audio.pause();
-    dom.btnDemo.classList.add('on');
-    dom.trackTitle.textContent = '演示信号 · Demo';
-    dom.trackSub.textContent = '内置合成器 · 3:2 利萨如曲线';
-    document.title = '演示信号 · 示波器音乐播放器';
-    setHint(false);
-    needsRedraw = true;
-    refSpeed = 0;
-    restoreTrackSettings();   // the demo is remembered like any other "track"
-  } else {
-    try { demo.merger.disconnect(); } catch (e) { /* not connected */ }
-    source = 'media';
-    dom.btnDemo.classList.remove('on');
-    restoreTitle();
-  }
-}
-
-function restoreTitle() {
-  const t = tracks[curIndex];
-  if (t) {
-    dom.trackTitle.textContent = t.name;
-    dom.trackSub.textContent = t.meta || '';
-    document.title = `${t.name} · 示波器音乐播放器`;
-  } else {
-    dom.trackTitle.textContent = '未加载音频';
-    dom.trackSub.textContent = '拖入文件，或打开播放列表';
-    document.title = '示波器音乐播放器 · Oscilloscope Music Player';
-  }
-}
 
 /* -------------------------------------------------------------- playlist */
 
@@ -848,15 +303,35 @@ async function addLocalFiles(files) {
   loadTrack(first, true);
 }
 
+/** Rebuild the <audio> element around the engine change and restore where the
+ *  listener was. audio.js drives this because it owns the graph; knowing which
+ *  file that is, is this layer's job. */
+function reloadCurrentSource({ wasDemo, time, playing }) {
+  if (wasDemo) { setDemo(true); return; }
+  const t = tracks[curIndex];
+  if (!t) return;
+  dom.audio.src = t.url;
+  if (time > 0.05) {
+    const onMeta = () => {
+      dom.audio.removeEventListener('loadedmetadata', onMeta);
+      try { dom.audio.currentTime = time; } catch (e) { /* ignore */ }
+      if (playing) play();
+    };
+    dom.audio.addEventListener('loadedmetadata', onMeta);
+  } else if (playing) {
+    play();
+  }
+}
+
 function loadTrack(i, autoplay) {
   const t = tracks[i];
   if (!t) return;
-  const same = i === curIndex && source === 'media';
-  if (source === 'demo') setDemo(false);
+  const same = i === curIndex && !audio.isDemo();
+  if (audio.isDemo()) setDemo(false);
   curIndex = i;
   // Build/rebuild the engine at this file's own rate *before* loading, so the
   // media is never resampled into the device rate on the analysis path.
-  sourceRate = t.sampleRate || 0;
+  audio.setSourceRate(t.sampleRate);
   ensureEngineRate();
   dom.audio.src = t.url;
   dom.audio.load();
@@ -868,11 +343,7 @@ function loadTrack(i, autoplay) {
   renderPlaylist();
   // Re-selecting the same row must not undo tweaks the user has not saved yet.
   if (!same) restoreTrackSettings();
-  refSpeed = 0;
-  agGain = 1;
-  scrubTick = 0;
-  monoCounter = 0;
-  needsRedraw = true;
+  render.resetTraceState();
 
   if (autoplay) play();
 }
@@ -881,7 +352,7 @@ function loadTrack(i, autoplay) {
 
 async function play() {
   resumeContext();
-  if (source === 'demo') {
+  if (audio.isDemo()) {
     if (!dom.audio.src) return;   // nothing to switch to — stay on the demo
     setDemo(false);              // playing a track leaves demo mode
   }
@@ -914,364 +385,10 @@ function seekBy(delta) {
   const d = dom.audio.duration;
   if (!Number.isFinite(d)) return;
   dom.audio.currentTime = clamp(dom.audio.currentTime + delta, 0, d);
-  needsRedraw = true;
-}
-
-/* ------------------------------------------------------------- renderer */
-
-const PX = new Float32Array(MAXN);
-const PY = new Float32Array(MAXN);
-/* Segment indices grouped by brightness bucket. Building these in the same
-   pass that maps samples to pixels means the whole trace is produced with
-   ONE pass over the samples plus one canvas op per drawn segment, instead of
-   one full scan per brightness level. */
-const BUCKET_IDX = new Int32Array(BUCKETS * MAXN);
-const BUCKET_N = new Int32Array(BUCKETS);
-
-let rafId = 0;
-let needsRedraw = true;
-let haveSignal = false;   // has a live frame ever been captured?
-let settle = 0;           // frames left to re-settle the afterglow after a pause
-let wasLive = false;
-let refSpeed = 0;        // smoothed mean beam speed, the 1/v blanking reference
-let agGain = 1;          // auto-gain (applied to BOTH axes to keep the figure's shape)
-let monoCounter = 0;
-let monoLike = false;
-let lastPeakL = 0;       // previous frame's peaks — auto-gain is smoothed anyway
-let lastPeakR = 0;
-
-function fadeAlpha() {
-  // 0 %  -> 1.0  (full clear every frame, zero afterglow)
-  // 100% -> 0.03 (long phosphor-like tail)
-  const p = clamp(S.persistence / 100, 0, 1);
-  return Math.pow(1 - p, 2) * 0.97 + 0.03;
-}
-
-/** Erase a layer by `alpha` — pure subtraction, never addition. */
-function fadeLayer(ctx, alpha) {
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.globalAlpha = 1;
-  ctx.globalCompositeOperation = 'destination-out';
-  ctx.fillStyle = `rgba(0,0,0,${alpha})`;
-  ctx.fillRect(0, 0, W, H);
-  ctx.globalCompositeOperation = 'source-over';
-}
-
-/* ---- the 8-bit quantisation floor (the "residue" slider) --------------
- * destination-out multiplies alpha: n <- n*(1-a). With round-to-nearest
- * 8-bit storage, every n <= 1/(2a) is a FIXED POINT and never decays. So a
- * slow fade (high 余辉) does not leave a longer ghost, it leaves a BRIGHTER
- * one — at 100% the floor is alpha ~15, clearly visible, and the whole region
- * the beam has ever swept keeps it forever.
- *
- * A periodic strong scrub is the only way out: a step of 1.0 clears the floor
- * completely, and anything weaker leaves a predictable amount of it behind.
- * Hence one slider, expressed as the residue you are willing to keep.
- */
-const SCRUB_EVERY = 180;   // frames (~3 s, longer than any visible trail)
-let scrubTick = 0;
-
-function scrubAlpha() {
-  const r = clamp(S.residue / 100, 0, 1);
-  if (r <= 0) return 1;                     // off -> wipe the floor completely
-  return Math.min(1, 3.125 / (r * 100));    // leaves a floor of roughly 16*r
-}
-
-/* ---- burn-in ---------------------------------------------------------- */
-/* A second accumulation layer that decays far more slowly than the afterglow:
-   it models phosphor *damage* rather than phosphor decay. Exposure is the
-   time-integral of beam current, so it is laid down from the same beam path
-   (and the same retrace blanking) as the trace — still crisp strokes, not a
-   blur, which is why it is not glow.
-
-   The exposure rate comes from a FRACTIONAL BUDGET, not from a tiny alpha: a
-   per-frame alpha below ~1/255 rounds away on an 8-bit backing store and
-   would never accumulate at all, so each painting uses a healthy alpha and
-   paintings are simply spaced out.
-   0 % = off, 100 % = permanent (never decays). */
-const burn = { on: false, gain: 0.03, rate: 0, decay: 0, fadeStep: 0.25, fadeEvery: 0, budget: 0, fadeTick: 0 };
-
-function clearBurnIn() {
-  if (!W || !H) return;
-  nctx.setTransform(1, 0, 0, 1, 0, 0);
-  nctx.globalAlpha = 1;
-  nctx.globalCompositeOperation = 'source-over';
-  nctx.clearRect(0, 0, W, H);
-  burn.budget = 0;
-  needsRedraw = true;
-}
-
-function updateBurnIn(force) {
-  const b = clamp(S.burnIn / 100, 0, 1);
-  const was = burn.on;
-  burn.on = b > 0.001;
-  burn.gain = 0.03;                      // per painting, well clear of 1/255
-  burn.rate = 0.02 * b;                  // paintings per frame (~1.2/s at 100%)
-  // Steady state for a pixel the beam keeps returning to is roughly
-  // rate*gain/decay, so decay is what decides how strong the ghost gets.
-  burn.decay = b >= 0.99 ? 0 : 0.0012 * Math.pow(1 - b, 2);
-  // Step big enough to clear the floor, then spread the steps out to keep the
-  // requested average rate.
-  burn.fadeStep = 0.25;
-  burn.fadeEvery = burn.decay > 0 ? Math.max(1, Math.round(burn.fadeStep / burn.decay)) : 0;
-  burn.budget = 0;
-  burn.fadeTick = 0;
-  if (force || (was && !burn.on)) clearBurnIn();   // turning it off wipes the ghost
-  const out = document.querySelector('[data-out="burnIn"]');
-  if (out) out.textContent = FORMATTERS.burnIn(S.burnIn);
-}
-
-/** Rising zero-crossing on X, used to phase-lock periodic figures. */
-function findTrigger(buf, maxStart, n) {
-  const limit = Math.min(maxStart, n);
-  let armed = false;
-  let best = -1;
-  for (let i = 1; i < limit; i++) {
-    const v = buf[i];
-    if (v < -0.03) { armed = true; continue; }
-    if (armed && v >= 0) { best = i; break; }
-  }
-  return best < 0 ? 0 : best;
-}
-
-function readSignal() {
-  const a = currentAnalysers();
-  if (!a) return false;
-  if (useFloat) {
-    // Read only analyserSize samples, not the whole 32768-sample buffer.
-    a[0].getFloatTimeDomainData(viewL);
-    a[1].getFloatTimeDomainData(viewR);
-  } else {
-    a[0].getByteTimeDomainData(viewBL);
-    a[1].getByteTimeDomainData(viewBR);
-    for (let i = 0; i < analyserSize; i++) {
-      bufL[i] = (byteL[i] - 128) / 128;
-      bufR[i] = (byteR[i] - 128) / 128;
-    }
-  }
-  return true;
-}
-
-function drawTrace(n, live) {
-  const m = n - 1;
-  const maxStart = Math.max(0, analyserSize - n);
-
-  let start = 0;
-  if (S.trigger && maxStart > 0) start = findTrigger(bufL, maxStart, n);
-
-  /* ---- auto-gain from the previous frame's peaks (one frame of lag on a
-     value that is exponentially smoothed anyway) ------------------------ */
-  if (S.autoGain) {
-    const pk = Math.max(lastPeakL, monoLike ? lastPeakL : lastPeakR, 1e-4);
-    const target = clamp(0.9 / pk, 0.35, 12);
-    const k = target < agGain ? 0.10 : 0.012;   // quick attack, slow release
-    agGain += (target - agGain) * k;
-  } else if (agGain !== 1) {
-    agGain += (1 - agGain) * 0.12;
-    if (Math.abs(agGain - 1) < 1e-3) agGain = 1;
-  }
-
-  const scale = PLOT * 0.5;
-  const ox = PLOT_X + PLOT * 0.5 + S.offX * scale;
-  const oy = PLOT_Y + PLOT * 0.5 - S.offY * scale;
-  const kx = scale * S.gainX * agGain;
-  const ky = scale * S.gainY * agGain;
-
-  const blanking = S.blanking;
-  const ref = Math.max(refSpeed > 0 ? refSpeed : PLOT * 0.01, PLOT * 0.0004);
-  const eps = PLOT * 0.0015;          // only keeps ref/s finite as s -> 0
-  const blankAt = S.blankRatio * ref;   // explicit drop threshold, no hidden clamp
-  const topBucket = BUCKETS - 1;
-
-  /* ---- ONE pass: map to pixels, track peaks, bucket the segments ------ */
-  let peakL = 0, peakR = 0, total = 0;
-  let prevX = 0, prevY = 0;
-  if (blanking) BUCKET_N.fill(0);
-
-  for (let i = 0; i < n; i++) {
-    let l = bufL[start + i];
-    const al = l < 0 ? -l : l;
-    if (al > peakL) peakL = al;
-    let r = monoLike ? l : bufR[start + i];
-    const ar = r < 0 ? -r : r;
-    if (ar > peakR) peakR = ar;
-    if (l > 16) l = 16; else if (l < -16) l = -16;
-    if (r > 16) r = 16; else if (r < -16) r = -16;
-
-    const x = ox + l * kx;
-    const y = oy - r * ky;
-    PX[i] = x;
-    PY[i] = y;
-
-    if (i > 0) {
-      const dx = x - prevX, dy = y - prevY;
-      const s = Math.sqrt(dx * dx + dy * dy);
-      total += s;
-      // Retrace blanking is an explicit comparison against the running mean
-      // speed, NOT a side effect of the bucket index. Making it explicit is
-      // what lets the threshold be a number you can state, test, and set:
-      // a segment is dropped when it is more than blankRatio times faster
-      // than the typical beam speed.
-      if (blanking && s <= blankAt) {
-        const w = ref / (s + eps);              // brightness ∝ 1/speed
-        let b = Math.ceil(w * topBucket);
-        if (b > topBucket) b = topBucket;
-        else if (b < 1) b = 1;
-        BUCKET_IDX[b * MAXN + BUCKET_N[b]++] = i - 1;
-      }
-    }
-    prevX = x;
-    prevY = y;
-  }
-
-  if (blanking) {
-    const mean = total / m;
-    if (!(refSpeed > 0)) refSpeed = mean;
-    refSpeed += (mean - refSpeed) * 0.06;
-  }
-
-  /* ---- mono fallback: a single-channel file leaves Y flat ------------ */
-  if (peakR < 1e-4 && peakL > 1e-3) monoCounter++;
-  else monoCounter = 0;
-  if (monoCounter > 40) monoLike = true;
-  else if (monoCounter === 0 && monoLike && peakR > 1e-3) monoLike = false;
-  lastPeakL = peakL;
-  lastPeakR = peakR;
-
-  /* ---- paint ---------------------------------------------------------- */
-  paintInto(tctx, n, S.intensity);
-
-  // Burn-in: the same beam path laid down a second time on the slow layer.
-  // Only while the beam is actually running — a paused scope has no beam, so
-  // re-settling the afterglow must not keep exposing the phosphor.
-  if (burn.on && live) {
-    burn.budget += burn.rate;
-    if (burn.budget >= 1) {
-      burn.budget = Math.min(burn.budget - 1, 1);   // never burst after a stall
-      paintInto(nctx, n, burn.gain);
-    }
-  }
-
-  if (S.beamDot) {
-    const lw = S.lineWidth * DPR;
-    tctx.fillStyle = S.color;
-    tctx.beginPath();
-    tctx.arc(PX[n - 1], PY[n - 1], Math.max(1.5 * DPR, lw * 1.4), 0, TAU);
-    tctx.fill();
-  }
-}
-
-/** Stroke the already-computed beam path into `ctx` with `base` as the peak
- *  alpha. Shared by the afterglow layer and the burn-in layer. */
-function paintInto(ctx, n, base) {
-  ctx.lineWidth = S.lineWidth * DPR;
-  ctx.lineJoin = 'round';
-  ctx.lineCap = 'round';
-  ctx.strokeStyle = S.color;
-
-  if (!S.blanking) {
-    // Plain beam path: one continuous polyline, never closed.
-    ctx.globalAlpha = clamp(base, 0, 1);
-    ctx.beginPath();
-    ctx.moveTo(PX[0], PY[0]);
-    for (let i = 1; i < n; i++) ctx.lineTo(PX[i], PY[i]);
-    ctx.stroke();
-    ctx.globalAlpha = 1;
-    return;
-  }
-
-  // Only the surviving segments reach here: anything faster than
-  // blankRatio × the mean beam speed was already dropped in the pass above.
-  // Those are retrace / blanking strokes — on a CRT the beam is racing, so
-  // they carry almost no charge per unit length, and under afterglow even a
-  // very dim one would still accumulate frame after frame into a visible
-  // chord. Dropping them outright is what removes retrace lines for good,
-  // rather than merely fading them. What is left is dimmed ∝ 1/speed.
-  for (let b = 1; b < BUCKETS; b++) {
-    const cnt = BUCKET_N[b];
-    if (!cnt) continue;
-    const base0 = b * MAXN;
-    ctx.globalAlpha = clamp(base * (b / (BUCKETS - 1)), 0, 1);
-    ctx.beginPath();
-    let prev = -2;
-    for (let k = 0; k < cnt; k++) {
-      const si = BUCKET_IDX[base0 + k];
-      if (si !== prev + 1) ctx.moveTo(PX[si], PY[si]);   // contiguous runs skip the moveTo
-      ctx.lineTo(PX[si + 1], PY[si + 1]);
-      prev = si;
-    }
-    ctx.stroke();
-  }
-  ctx.globalAlpha = 1;
+  flags.redraw = true;
 }
 
 /* ------------------------------------------------------------ main loop */
-
-function isLive() {
-  if (!currentAnalysers()) return false;
-  if (source === 'demo') return !!ac && ac.state === 'running';
-  return !dom.audio.paused && !dom.audio.ended && !dom.audio.seeking;
-}
-
-let uiTick = 0;
-
-function loop(ts) {
-  rafId = requestAnimationFrame(loop);
-  const now = typeof ts === 'number' ? ts : performance.now();
-  // The scrubber only needs ~10 Hz; writing three DOM properties every frame
-  // was costing more than it looked.
-  if (now - uiTick > 100) { uiTick = now; updateTransportUI(); }
-  if (document.hidden) return;
-  if (!W || !H) return;
-
-  const live = isLive();
-
-  if (live) {
-    wasLive = true;
-    settle = 0;
-    if (!readSignal()) return;
-    haveSignal = true;
-  } else {
-    // A paused <audio> element feeds the graph silence, so the analysers go
-    // flat. Never re-read them here — keep painting the last captured window
-    // instead, otherwise pausing (or nudging a slider while paused) would
-    // blank the screen.
-    if (wasLive) {
-      wasLive = false;
-      settle = 100;                                   // just paused: let the afterglow settle
-      if (S.residue <= 0) scrubTick = SCRUB_EVERY;    // and wipe the floor before it freezes
-    }
-    if (needsRedraw) settle = 100;                    // settings changed: re-settle
-    if (!haveSignal || settle <= 0) { needsRedraw = false; return; }
-    settle--;
-  }
-  needsRedraw = false;
-
-  const workStart = performance.now();
-  // Afterglow is pure subtraction: destination-out only ever removes alpha,
-  // so a bright pixel can never bleed light into its neighbours.
-  if (++scrubTick >= SCRUB_EVERY) {
-    scrubTick = 0;
-    fadeLayer(tctx, scrubAlpha());
-  } else {
-    fadeLayer(tctx, fadeAlpha());
-  }
-  // The burn-in decays far more slowly than the afterglow, so its fade runs
-  // in chunky steps. A small per-frame step would sit below the quantisation
-  // floor and the ghost would never decay at all.
-  if (burn.on && burn.fadeEvery > 0 && ++burn.fadeTick >= burn.fadeEvery) {
-    burn.fadeTick = 0;
-    fadeLayer(nctx, burn.fadeStep);
-  }
-
-  try {
-    drawTrace(winSize(), live);
-  } catch (err) {
-    if (!loop.warned) { loop.warned = true; console.error('[scope] render error', err); }
-  }
-  tctx.globalAlpha = 1;
-  adaptQuality(performance.now() - workStart);
-}
 
 /* ------------------------------------------------------- transport UI sync */
 
@@ -1299,28 +416,13 @@ let seekHeld = false;
 
 /* ------------------------------------------------------------- UI wiring */
 
-const FORMATTERS = {
-  gainX: (v) => Number(v).toFixed(2),
-  gainY: (v) => Number(v).toFixed(2),
-  offX: (v) => Number(v).toFixed(2),
-  offY: (v) => Number(v).toFixed(2),
-  windowIdx: () => winSize().toLocaleString('en-US'),
-  intensity: (v) => Number(v).toFixed(2),
-  lineWidth: (v) => Number(v).toFixed(2) + ' px',
-  persistence: (v) => Math.round(v) + ' %',
-  burnIn: (v) => (v <= 0 ? '关' : v >= 99.5 ? '永久' : Math.round(v) + ' %'),
-  residue: (v) => (v <= 0 ? '关' : Math.round(v) + ' %'),
-  blankRatio: (v) => (Number.isInteger(v) ? String(v) : v.toFixed(1)) + '×',
-  color: (v) => String(v).toUpperCase(),
-};
-
 function applyAccent(color) {
   document.documentElement.style.setProperty('--accent', color);
   for (const sw of dom.swatches.children) {
     sw.classList.toggle('active', sw.dataset.color.toLowerCase() === String(color).toLowerCase());
   }
   drawBackground();   // the graticule is tinted from the same colour
-  needsRedraw = true;
+  flags.redraw = true;
 }
 
 function syncControlsFromState() {
@@ -1353,9 +455,9 @@ function bindControls() {
       S[key] = el.type === 'range' ? parseFloat(el.value) : el.value;
       if (out) out.textContent = FORMATTERS[key](S[key]);
       if (key === 'color') applyAccent(S.color);
-      if (key === 'windowIdx') { refSpeed = 0; applyAnalyserSize(); }
+      if (key === 'windowIdx') { render.resetRefSpeed(); applyAnalyserSize(); }
       if (key === 'burnIn') updateBurnIn(false);
-      needsRedraw = true;
+      flags.redraw = true;
       noteSettingsChanged();
     };
     el.addEventListener('input', onInput);
@@ -1376,7 +478,7 @@ function bindControls() {
       const out = document.querySelector('[data-out="color"]');
       if (out) out.textContent = c.toUpperCase();
       applyAccent(c);
-      needsRedraw = true;
+      flags.redraw = true;
       noteSettingsChanged();
     });
     dom.swatches.appendChild(b);
@@ -1389,9 +491,9 @@ function bindControls() {
       S[key] = !S[key];
       btn.setAttribute('aria-pressed', String(S[key]));
       if (key === 'grid') drawBackground();
-      if (key === 'trigger') refSpeed = 0;
+      if (key === 'trigger') render.resetRefSpeed();
       if (key === 'blanking') syncControlsFromState();   // enable/disable the threshold row
-      needsRedraw = true;
+      flags.redraw = true;
       noteSettingsChanged();
     });
   }
@@ -1405,7 +507,7 @@ function bindControls() {
   dom.btnPrev.addEventListener('click', () => nextTrack(-1));
   dom.btnNext.addEventListener('click', () => nextTrack(1));
   dom.btnDemo.addEventListener('click', () => {
-    const turningOn = source !== 'demo';
+    const turningOn = !audio.isDemo();
     setDemo(turningOn);
     if (turningOn && !S.trigger) { S.trigger = true; syncControlsFromState(); }
     if (turningOn) toast('演示信号');
@@ -1442,7 +544,7 @@ function bindControls() {
       dom.audio.currentTime = (pct / 100) * d;
       dom.tCur.textContent = fmtTime(dom.audio.currentTime);
     }
-    needsRedraw = true;
+    flags.redraw = true;
   });
   const releaseSeek = () => { seekHeld = false; };
   dom.seek.addEventListener('pointerup', releaseSeek);
@@ -1462,10 +564,11 @@ function bindControls() {
     rateModeSel.addEventListener('change', () => {
       S.rateMode = rateModeSel.value;
       applyRateMode();
-      const eng = ac ? ac.sampleRate : 0;
+      const eng = audio.status().engineRate;
+      const srcRate = audio.status().sourceRate;
       toast(!eng ? '引擎跟随设备采样率'
-        : !sourceRate ? `引擎 ${rateText(eng)}`
-          : `引擎 ${rateText(eng)} · ${eng === sourceRate ? '原生' : `源 ${rateText(sourceRate)} · 重采样`}`);
+        : !srcRate ? `引擎 ${rateText(eng)}`
+          : `引擎 ${rateText(eng)} · ${eng === srcRate ? '原生' : `源 ${rateText(srcRate)} · 重采样`}`);
     });
   }
 
@@ -1473,7 +576,7 @@ function bindControls() {
     scaleSel.value = S.renderScale;
     scaleSel.addEventListener('change', () => {
       S.renderScale = scaleSel.value;
-      if (S.renderScale === 'auto') { autoScale = 1; workAvg = 0; qualityCooldown = 120; }
+      if (S.renderScale === 'auto') { render.resetQuality(); }
       applyScale();
       toast(`渲染缩放 ${Math.round(effectiveDpr() * 100)}%`);
     });
@@ -1482,11 +585,11 @@ function bindControls() {
   const perfBtn = $('btnPerf');
   if (perfBtn) perfBtn.addEventListener('click', () => setPerfMode(!perfSnapshot));
 
-  window.addEventListener('resize', () => { if (layout()) needsRedraw = true; });
+  window.addEventListener('resize', () => { if (layout()) flags.redraw = true; });
   if (window.ResizeObserver) {
-    new ResizeObserver(() => { if (layout()) needsRedraw = true; }).observe(dom.stage);
+    new ResizeObserver(() => { if (layout()) flags.redraw = true; }).observe(dom.stage);
   }
-  document.addEventListener('fullscreenchange', () => { if (layout()) needsRedraw = true; });
+  document.addEventListener('fullscreenchange', () => { if (layout()) flags.redraw = true; });
 }
 
 /** Audio-element listeners. Re-attached every time the engine rebuilds the
@@ -1494,7 +597,7 @@ function bindControls() {
 function bindAudioEvents(el) {
   el.addEventListener('play', () => {
     dom.btnPlay.classList.add('playing');
-    needsRedraw = true;
+    flags.redraw = true;
   });
   el.addEventListener('pause', () => dom.btnPlay.classList.remove('playing'));
   el.addEventListener('ended', () => {
@@ -1506,10 +609,10 @@ function bindAudioEvents(el) {
     const code = el.error ? el.error.code : 0;
     toast(code === 4 ? '浏览器无法解码此文件' : '音频加载失败');
   });
-  el.addEventListener('seeking', () => { needsRedraw = true; });
+  el.addEventListener('seeking', () => { flags.redraw = true; });
   el.addEventListener('loadedmetadata', () => {
     uiCache.dur = -1;
-    needsRedraw = true;
+    flags.redraw = true;
   });
 }
 
@@ -1517,25 +620,49 @@ function bindAudioEvents(el) {
  *  syncControlsFromState() alone does not touch (analyser size, render
  *  scale, smoothing accumulators). Forgetting the analyser size here left a
  *  4096-sample window being drawn out of a 1024-sample buffer. */
+/** Switch the visible source to/from the built-in demo. audio.js owns the
+ *  graph; the titles, the button, the preset memory and the render state are
+ *  this layer's business — which is why the engine takes a hook instead. */
+function setDemo(on) {
+  if (!audio.setDemoSource(on)) return;
+  if (on) {
+    dom.audio.pause();
+    dom.btnDemo.classList.add('on');
+    dom.trackTitle.textContent = '演示信号 · Demo';
+    dom.trackSub.textContent = '内置合成器 · 3:2 利萨如曲线';
+    document.title = '演示信号 · 示波器音乐播放器';
+    setHint(false);
+    flags.redraw = true;
+    render.resetRefSpeed();
+    restoreTrackSettings();   // the demo is remembered like any other "track"
+  } else {
+    dom.btnDemo.classList.remove('on');
+    restoreTitle();
+  }
+}
+
+function restoreTitle() {
+  const t = tracks[curIndex];
+  if (t) {
+    dom.trackTitle.textContent = t.name;
+    dom.trackSub.textContent = t.meta || '';
+    document.title = `${t.name} · 示波器音乐播放器`;
+  } else {
+    dom.trackTitle.textContent = '未加载音频';
+    dom.trackSub.textContent = '拖入文件，或打开播放列表';
+    document.title = '示波器音乐播放器 · Oscilloscope Music Player';
+  }
+}
+
 function resetSettings() {
   Object.assign(S, DEFAULTS);
-  autoScale = 1;
-  workAvg = 0;
-  qualityCooldown = 120;
-  refSpeed = 0;
-  agGain = 1;
-  scrubTick = 0;
-  monoCounter = 0;
-  monoLike = false;
-  lastPeakL = 0;
-  lastPeakR = 0;
+  render.resetQuality();
+  render.resetTraceState({ settle: true });
   syncControlsFromState();
   applyAnalyserSize();
   applyScale();
   drawBackground();
   updateBurnIn(true);
-  needsRedraw = true;
-  settle = 100;
   activePreset = '默认';      // defaults ARE the 默认 preset, for the keys it covers
   noteSettingsChanged();
 }
@@ -1571,9 +698,8 @@ function setPerfMode(on) {
   applyRateMode();
   applyScale();
   drawBackground();
-  refSpeed = 0;
-  needsRedraw = true;
-  settle = 100;
+  render.resetRefSpeed();
+  flags.settle = 100;
   activePreset = null;   // perf mode is a machine setting, not a preset
   noteSettingsChanged();
   toast(on ? '性能模式：开' : '性能模式：关');
@@ -1584,18 +710,14 @@ function togglePanel(id) {
   const open = !p.classList.contains('open');
   p.classList.toggle('open', open);
   $(id === 'panelSettings' ? 'btnSettings' : 'btnList').classList.toggle('on', open);
-  if (layout()) { needsRedraw = true; settle = 100; }   // the plot may need to give up margin
+  if (layout()) { flags.redraw = true; flags.settle = 100; }   // the plot may need to give up margin
   // Left and right rails are independent now that they reserve their own
   // space, so both panels can be open at once.
 }
 
 function screenshot() {
-  if (!W || !H) return;
-  const c = document.createElement('canvas');
-  c.width = W; c.height = H;
-  const g = c.getContext('2d');
-  g.drawImage(dom.bg, 0, 0);
-  g.drawImage(dom.trace, 0, 0);
+  const c = render.composite();
+  if (!c) return;
   c.toBlob((blob) => {
     if (!blob) return toast('截图失败');
     const a = document.createElement('a');
@@ -1683,13 +805,9 @@ const findPreset = (name) => allPresets().find((p) => p.name === name) || null;
 
 function applySettings(raw) {
   Object.assign(S, sanitizeSettings(raw));
-  refSpeed = 0;
-  agGain = 1;
-  scrubTick = 0;
+  render.resetTraceState({ settle: true });
   syncControlsFromState();     // sliders, toggles, colour and the dependent rows
-  applyAnalyserSize();         // the window may have moved
-  needsRedraw = true;
-  settle = 100;
+  audio.applyAnalyserSize();   // the window may have moved
 }
 
 function applyPreset(name) {
@@ -1703,7 +821,7 @@ function applyPreset(name) {
 }
 
 function currentTrackKey() {
-  if (source === 'demo') return '@demo';
+  if (audio.isDemo()) return '@demo';
   const t = tracks[curIndex];
   return t ? t.name : null;
 }
@@ -1845,7 +963,7 @@ function refreshChipStates() {
 }
 
 function renderPresetStatus() {
-  const where = source === 'demo' ? '演示信号' : (currentTrackKey() || '未加载音频');
+  const where = audio.isDemo() ? '演示信号' : (currentTrackKey() || '未加载音频');
   const p = activePreset ? findPreset(activePreset) : null;
   const el = dom.presetStatus;
   refreshChipStates();
@@ -2036,7 +1154,7 @@ function onKey(e) {
     case ',': nextTrack(-1); break;
     case '.': nextTrack(1); break;
     case 'd': case 'D': {
-      const on = source !== 'demo';
+      const on = !audio.isDemo();
       setDemo(on);
       if (on && !S.trigger) { S.trigger = true; syncControlsFromState(); }
       break;
@@ -2048,9 +1166,9 @@ function onKey(e) {
       else document.documentElement.requestFullscreen().catch(() => {});
       break;
     case 's': case 'S': screenshot(); break;
-    case 'g': case 'G': S.grid = !S.grid; syncControlsFromState(); drawBackground(); needsRedraw = true; break;
+    case 'g': case 'G': S.grid = !S.grid; syncControlsFromState(); drawBackground(); flags.redraw = true; break;
     case 'b': case 'B': S.blanking = !S.blanking; syncControlsFromState(); toast('速度消隐 ' + (S.blanking ? '开' : '关')); break;
-    case 't': case 'T': S.trigger = !S.trigger; syncControlsFromState(); refSpeed = 0; toast('相位锁定 ' + (S.trigger ? '开' : '关')); break;
+    case 't': case 'T': S.trigger = !S.trigger; syncControlsFromState(); render.resetRefSpeed(); toast('相位锁定 ' + (S.trigger ? '开' : '关')); break;
     case 'r': case 'R':
       resetSettings();
       toast('已恢复默认设置'); break;
@@ -2123,30 +1241,7 @@ function bindDragDrop() {
    that no resampling is happening). Harmless in normal use. */
 window.__scope = {
   get state() {
-    return {
-      engineRate: ac ? ac.sampleRate : 0,
-      contextState: ac ? ac.state : 'none',
-      sourceRate,
-      source,
-      rateMode: S.rateMode,
-      windowSize: winSize(),
-      renderScale: S.renderScale,
-      effectiveDpr: effectiveDpr(),
-      analyserSize,
-      canvas: { w: W, h: H },
-      plot: { x: PLOT_X, y: PLOT_Y, size: PLOT },
-      workMs: workAvg,
-      work: {
-        trimmed: workTrimmed(0.25),   // load-proof headline number
-        trimmed50: workTrimmed(0.5),
-        min: workStat(0),
-        p50: workStat(0.5),
-        p95: workStat(0.95),
-        avg: workAvg,
-        frames: workFilled,
-      },
-      autoScale,
-    };
+    return Object.assign(render.state(), audio.status());
   },
   readAnalyser() {
     const a = currentAnalysers();
@@ -2155,7 +1250,7 @@ window.__scope = {
     const R = new Float32Array(MAXN);
     a[0].getFloatTimeDomainData(L);
     a[1].getFloatTimeDomainData(R);
-    return { engineRate: ac.sampleRate, L: Array.from(L), R: Array.from(R) };
+    return { engineRate: audio.status().engineRate, L: Array.from(L), R: Array.from(R) };
   },
   setRateMode(mode) {
     S.rateMode = String(mode);
@@ -2172,6 +1267,8 @@ async function init() {
   layout();
   applyAnalyserSize();
   bindAudioEvents(dom.audio);
+  audio.setElementHook(bindAudioEvents);
+  audio.setSourceReloader(reloadCurrentSource);
   bindControls();
   initPresets();
   bindDragDrop();
@@ -2189,7 +1286,8 @@ async function init() {
   }
 
   renderPlaylist();
-  rafId = requestAnimationFrame(loop);
+  render.setTickHandler(updateTransportUI);
+  render.startLoop();
 
   const found = await loadServerTracks();
   if (found) {
