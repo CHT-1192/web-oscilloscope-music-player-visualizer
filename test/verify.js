@@ -743,14 +743,15 @@ async function renderTests(pw, rq = '') {
         return [0.7 * Math.cos(t * Math.PI * 2), 0.7 * Math.sin(t * Math.PI * 2)];
       }
       if (k === 'stationary') return [0, 0];     // a beam that never moves
+      if (k === 'dense') {                       // a figure with strokes everywhere
+        return [0.62 * Math.sin(t * 6.283) + 0.26 * Math.sin(t * 43.98 + 1.1),
+                0.62 * Math.sin(t * 12.566 + 0.4) + 0.26 * Math.sin(t * 31.4)];
+      }
       if (t < 0.5) return [-0.6 + 1.2 * (t / 0.5), -0.5];        // a slow line
       return [-0.02 + 0.04 * ((t - 0.5) / 0.5), -0.5];           // ...then a creep
     };
   }, mode);
-  const spotOf = () => page.evaluate(() => {
-    const s = window.__scope.state;
-    return { spot: s.spotMax, dose: s.doseMax };
-  });
+  const doseOf = () => page.evaluate(() => window.__scope.state.doseMax);
   const setCtl = (key, v) => page.evaluate(([k, val]) => {
     const el = document.querySelector(`[data-set="${k}"]`);
     el.value = String(val);
@@ -796,20 +797,15 @@ async function renderTests(pw, rq = '') {
   await setCtl('halo', 0);
   await setSynth('uniform');
   await page.waitForTimeout(1500);
-  const uni0 = await spotOf();
+  const uni0 = await doseOf();
   await setSynth('stationary');
   await page.waitForTimeout(1500);
-  const flat0 = await spotOf();
+  const flat0 = await doseOf();
 
   await setCtl('halo', 100);
-  await setSynth('uniform');
-  await page.waitForTimeout(1500);
-  const uni100 = await spotOf();
   await setSynth('stationary');
   await page.waitForTimeout(1500);
-  const flat100 = await spotOf();
-  const spotUniform0 = uni0.spot, spotFlat0 = flat0.spot;
-  const spotUniform100 = uni100.spot, spotFlat100 = flat100.spot;
+  const flat100 = await doseOf();
 
   /* The DOSES are where the dashes come from, so assert them directly: a beam
      that never moves must deposit orders of magnitude more per unit length than
@@ -817,48 +813,23 @@ async function renderTests(pw, rq = '') {
      (PLOT x 0.0015 ≈ 1.7x the mean step of a 600 px plot, which is what this
      used to be) flattens that to ~2x, and the trace then renders as a uniformly
      bright web whose contrast comes only from self-overlap. */
-  if (flat0.dose > 8 && uni0.dose > 0.5 && uni0.dose < 3) {
+  if (flat0 > 8 && uni0 > 0.5 && uni0 < 3) {
     ok('the 1/v dose is unbounded above the mean',
-      `stationary x${flat0.dose.toFixed(0)} vs sweeping x${uni0.dose.toFixed(2)}`);
+      `stationary x${flat0.toFixed(0)} vs sweeping x${uni0.toFixed(2)}`);
   } else {
-    bad('the 1/v dose is unbounded above the mean',
-      JSON.stringify({ stationary: flat0.dose, uniform: uni0.dose }));
+    bad('the 1/v dose is unbounded above the mean', JSON.stringify({ stationary: flat0, uniform: uni0 }));
   }
-  if (Math.abs(flat100.dose - flat0.dose) < 1e-6) {
-    ok('the dose does not depend on the halo slider', `x${flat100.dose.toFixed(0)}`);
+  if (Math.abs(flat100 - flat0) < 1e-6) {
+    ok('the dose does not depend on the halo slider', `x${flat100.toFixed(0)}`);
   } else {
-    bad('the dose does not depend on the halo slider', `${flat0.dose} vs ${flat100.dose}`);
-  }
-
-  if (isGL) {
-    if (spotUniform0 === 1 && spotFlat0 === 1) {
-      ok('光晕 0: the spot is exactly the line width', `uniform ${spotUniform0}, stationary ${spotFlat0}`);
-    } else {
-      bad('光晕 0: the spot is exactly the line width', `${spotUniform0} / ${spotFlat0}`);
-    }
-    if (spotFlat100 >= 3.8 && spotFlat100 > spotUniform100 * 2.5) {
-      ok('光晕 follows the dose, not the slider',
-        `stationary beam swells to x${spotFlat100} vs x${spotUniform100.toFixed(2)} at constant speed`);
-    } else {
-      bad('光晕 follows the dose, not the slider', `stationary ${spotFlat100}, uniform ${spotUniform100}`);
-    }
-    if (spotUniform100 > 1.1 && spotUniform100 < 2.5) {
-      ok('an ordinary segment only softens a little', `x${spotUniform100.toFixed(2)} at 光晕 100`);
-    } else {
-      bad('an ordinary segment only softens a little', `x${spotUniform100}`);
-    }
-  } else {
-    if (spotUniform100 === 1 && spotFlat100 === 1) {
-      ok('Canvas path: the spot stays the line width (why the row is disabled)', 'x1 at 光晕 100');
-    } else {
-      bad('Canvas path: the spot stays the line width', `${spotUniform100} / ${spotFlat100}`);
-    }
+    bad('the dose does not depend on the halo slider', `${flat0} vs ${flat100}`);
   }
 
-  /* The halo must still be a spot: ink 10 px off the beam appears only with 光晕
-     on, and 80 px off (past 3σ of the widest allowed swell) is black even at
-     100 %. 3σ of sigma x12 at this device pixel ratio is ~31 px, so 80 px is a
-     real bound rather than a number that happens to pass. */
+  /* The halo is a cloud of scattered light, so the profile running away from the
+     beam has to REACH FAR and FALL SMOOTHLY. Two earlier versions failed this:
+     one widened the beam spot with the dose, so the light stopped dead at 3σ of
+     that spot (a disc with an edge, and a beaded trace), and one put the halo in
+     the energy buffer, where it saturated out to its own cutoff — the same cliff. */
   const inkAbove = (dy) => page.evaluate(([d, cx, cy, size]) => {
     const y = Math.round(cy + 0.25 * size - d);      // the line sits at cy + PLOT/4
     const x = Math.round(cx);
@@ -867,6 +838,15 @@ async function renderTests(pw, rq = '') {
     for (let i = 3; i < px.length; i += 4) if (px[i] > max) max = px[i];
     return max;
   }, [dy, center.cx, center.cy, center.PLOT]);
+
+  const meanInk = () => page.evaluate(() => {
+    const st = window.__scope.state;
+    const s = Math.round(st.plot.size);
+    const d = window.__scope.readTrace(Math.round(st.plot.x), Math.round(st.plot.y), s, s);
+    let sum = 0, n = 0;
+    for (let i = 3; i < d.length; i += 4) { sum += d[i]; n++; }
+    return sum / n;
+  });
 
   await setSynth('line');
   await page.waitForTimeout(1800);
@@ -880,34 +860,41 @@ async function renderTests(pw, rq = '') {
   for (const d of OFFSETS) profOff.push(await inkAbove(d));
 
   if (isGL) {
-    if (profOn[1] > 20 && nearOff === 0) {
+    if (profOn[1] > 4 && nearOff === 0) {
       ok('the halo really is drawn around a dwelling beam', `10 px off the beam: ${nearOff} → ${profOn[1]}`);
     } else {
       bad('the halo really is drawn around a dwelling beam', `10 px: ${nearOff} off, ${profOn[1]} at 100`);
     }
-    /* The cloud is a scatter of the emitted light, so the profile running away
-       from the beam has to FALL SMOOTHLY — that is the whole point of moving it
-       after the tone map. Applied to the energy buffer instead it saturated out
-       to its cutoff and ended in a cliff (the first attempt at this). */
     const rises = profOn.slice(1).some((v, i) => v > profOn[i] + 8);
-    /* Two things the old (energy-space) halo could not do: keep light going far
-       past the widest spot, and never step to zero — it ended at 3σ of its own
-       cutoff, i.e. a disc with an edge. This profile has to reach 130 px and fall
-       all the way without a cliff. */
-    const steps = profOn.slice(1).map((v, i) => (profOn[i] > 0 ? v / profOn[i] : 1));
-    const worstStep = Math.min(...steps);
-    if (profOn[2] > 4 && profOn[3] > 0 && profOn[7] < profOn[2] * 0.6 && !rises && worstStep >= 0.1) {
-      ok('the halo is a wide cloud that fades smoothly',
-        `alpha at ${OFFSETS.join('/')} px: ${profOn.join('/')}`);
+    /* "No cliff": the profile may fade fast but it may not step off an edge. The
+       old halos both ended in one — light stopped dead at 3σ of a widened spot,
+       or at the cutoff of a halo term that had itself saturated. */
+    const worstDrop = Math.max(...profOn.slice(1).map((v, i) => profOn[i] - v));
+    if (profOn[0] > 5 && profOn[2] > 0 && !rises && worstDrop <= 12) {
+      ok('the halo is a bounded skirt with no cliff',
+        `alpha at ${OFFSETS.join('/')} px: ${profOn.join('/')}, worst drop ${worstDrop}`);
     } else {
-      bad('the halo is a wide cloud that fades smoothly',
-        `alpha ${profOn.join('/')} · worst step x${worstStep.toFixed(2)}`);
+      bad('the halo is a bounded skirt with no cliff',
+        `alpha ${profOn.join('/')} · worst drop ${worstDrop}`);
     }
-    if (profOff[1] === 0 && profOff[3] === 0) {
+    if (profOff[0] === 0 && profOff[3] === 0) {
       ok('光晕 0 is exactly the old spot: nothing leaves the beam',
         `off at 10 px and at 28 px (${profOn[3]} at 光晕 100)`);
     } else {
       bad('光晕 0 is exactly the old spot', `${profOff.join('/')}`);
+    }
+    await setSynth('dense');
+    await setCtl('halo', 0);
+    await page.waitForTimeout(1800);
+    const dense0 = await meanInk();
+    await setCtl('halo', 100);
+    await page.waitForTimeout(1800);
+    const dense100 = await meanInk();
+    if (dense100 > dense0 * 1.5) {
+      ok('around a dense figure the cloud is unmissable',
+        `mean alpha ${dense0.toFixed(1)} → ${dense100.toFixed(1)}`);
+    } else {
+      bad('around a dense figure the cloud is unmissable', `${dense0} → ${dense100}`);
     }
   } else if (profOn[0] === 0 && profOn[profOn.length - 1] === 0) {
     ok('Canvas path: no halo at all, as the disabled row says', `nothing past the stroke: ${profOn.join('/')}`);

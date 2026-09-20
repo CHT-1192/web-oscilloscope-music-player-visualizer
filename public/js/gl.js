@@ -16,23 +16,22 @@
  *    · the tone map saturates smoothly instead of clipping, so overlapping
  *      passes brighten and then stop, like a phosphor.
  *
- *  What it deliberately does NOT do: no blur, no bloom pass. The additive step
- *  happens on the pixel the beam actually hits, spread only by the beam's own
- *  Gaussian spot, and that spot's sigma is the caller's business. With a constant
- *  sigma (the default) brightness never bleeds into a pixel the beam did not
- *  illuminate, which is what keeps "no glow" true even though the accumulation is
- *  additive.
+ *  What it deliberately does NOT do: no blur, no bloom pass, and no widening
+ *  with the dose. The additive step happens on the pixel the beam actually hits,
+ *  spread only by the beam's own Gaussian spot, and that spot has ONE sigma for
+ *  every segment: on a real tube the spot size is set by the beam current and the
+ *  focus, not by how fast the beam happens to be moving at that sample. What
+ *  varies with writing speed is brightness per unit length, i.e. the energy
+ *  below. (Varying sigma with the dose was tried: adjacent samples have different
+ *  doses, so the trace came out beaded like a string of little dots.)
  *
- *  The one exception is opt-in and physical rather than cosmetic: a real tube's
- *  spot SWELLS with beam current (space charge, and a finite cathode), so a beam
- *  that dwells writes a disc instead of a point — the saturated core plus the
- *  skirt around it is the halo you see on an analog scope. That is a per-instance
- *  sigma (`aSwell`, 1 = the line width), still a Gaussian whose tail is
- *  subtracted so it reaches exactly zero at 3σ: the halo stays inside the spot
- *  and never becomes an unbounded tail. The caller defaults it to 1.
+ *  So brightness never bleeds into a pixel the beam did not illuminate, which is
+ *  what keeps "no glow" true even though the accumulation is additive. The halo
+ *  is opt-in and lives in a separate pass AFTER the tone map, because it is a
+ *  scatter of light the phosphor has already emitted — see FRAG_HALO.
  *
  *  Everything above is GPU-side; the CPU uploads one instance record per
- *  segment (6 floats) and issues three draw calls per frame.
+ *  segment (5 floats) and issues three draw calls per frame.
  * ========================================================================== */
 
 const VERT_QUAD = `#version 300 es
@@ -67,9 +66,8 @@ in vec2 aCorner;                 // the unit quad, 6 vertices, shared by all ins
 in vec2 aP0;                     // segment start, device pixels
 in vec2 aP1;                     // segment end
 in float aEnergy;                // exposure for this segment (∝ 1/speed, 0 = blanked)
-in float aSwell;                 // spot sigma for this segment, in multiples of uHalfWidth
 uniform vec2 uViewport;
-uniform float uHalfWidth;        // base Gaussian sigma, in pixels (the line width)
+uniform float uHalfWidth;        // Gaussian sigma, in pixels (the beam's own width)
 uniform float uExposure;         // energy per unit of 1/v, per frame
 out vec2 vPos;                   // pixel position
 out vec2 vA;                     // segment start
@@ -86,7 +84,7 @@ void main() {
   float len = max(length(seg), 0.0001);
   vec2 dir = seg / len;
   vec2 nrm = vec2(-dir.y, dir.x);
-  float sigma = uHalfWidth * max(aSwell, 0.05);
+  float sigma = uHalfWidth;
   float reach = sigma * 3.0;                          // ~3σ covers the spot
   vec2 along = dir * (len * 0.5 + reach);
   vec2 across = nrm * reach;
@@ -178,20 +176,61 @@ const FRAG_HALO = `#version 300 es
 precision highp float;
 in vec2 vUv;
 uniform sampler2D uSrc;          // tone-mapped frame, mipmapped
+uniform sampler2D uNear;         // blurred mip 4  (~16 px cells)
+uniform sampler2D uWide;         // blurred mip 6  (~64 px cells)
 uniform vec3 uColour;
 uniform float uMix;              // halation amplitude; 0 = the pass is skipped
 out vec4 outColour;
-const float W0 = 0.22, W1 = 0.20, W2 = 0.18, W3 = 0.16, W4 = 0.14, W5 = 0.10;
+
+/* Three scales of the same scatter: a tight one (mip 1, whose 2-px cells are
+   already finer than a CSS pixel so its lattice is invisible), a mid one and a
+   wide one, both blurred first — see FRAG_BLUR.
+
+   The taps are AVERAGES, and how they are weighted is the whole game. Weighting
+   the narrow ones (the obvious "bloom" choice) gives a halo that hugs the trace
+   and dies within one octave; weighting the octaves EQUALLY gives the long,
+   roughly 1/r tail that reaches a sixth of the screen. That tail is the cloud in
+   reference photos 2 and 3.
+
+   Being a convolution of what is already on screen, the cloud is obvious around
+   a dense figure and nearly invisible around one thin line. That is not a defect
+   to tune away — it is why those photographs differ from each other so much. */
 void main() {
   float l = texture(uSrc, vUv).a;
-  float h = W0 * textureLod(uSrc, vUv, 3.0).a
-          + W1 * textureLod(uSrc, vUv, 4.0).a
-          + W2 * textureLod(uSrc, vUv, 5.0).a
-          + W3 * textureLod(uSrc, vUv, 6.0).a
-          + W4 * textureLod(uSrc, vUv, 7.0).a
-          + W5 * textureLod(uSrc, vUv, 8.0).a;
+  float h = 0.40 * textureLod(uSrc, vUv, 1.0).a
+          + 0.33 * texture(uNear, vUv).a
+          + 0.27 * texture(uWide, vUv).a;
   float a = min(1.0, l + uMix * h);
   outColour = vec4(uColour * a, a);
+}`;
+
+/* Blur one mip level before anything samples it, and this is not optional: a
+   single bilinear tap on a coarse level magnifies its texel lattice, and with a
+   thin trace that lattice is a string of beads — a few bright texels separated
+   by empty ones, each reconstructed as its own little dot. A 13-tap tent takes
+   the lattice out. It runs at the level's own resolution, so it is cheap. */
+const FRAG_BLUR = `#version 300 es
+precision highp float;
+in vec2 vUv;
+uniform sampler2D uSrc;
+uniform float uLod;              // which mip level to read
+uniform vec2 uStep;              // one texel of THAT level, in uv
+out vec4 outColour;
+void main() {
+  float c = textureLod(uSrc, vUv, uLod).a * 4.0;
+  float e = (textureLod(uSrc, vUv + vec2(uStep.x, 0.0), uLod).a
+           + textureLod(uSrc, vUv - vec2(uStep.x, 0.0), uLod).a
+           + textureLod(uSrc, vUv + vec2(0.0, uStep.y), uLod).a
+           + textureLod(uSrc, vUv - vec2(0.0, uStep.y), uLod).a) * 2.0;
+  float d = textureLod(uSrc, vUv + vec2(uStep.x, uStep.y), uLod).a
+          + textureLod(uSrc, vUv - vec2(uStep.x, uStep.y), uLod).a
+          + textureLod(uSrc, vUv + vec2(uStep.x, -uStep.y), uLod).a
+          + textureLod(uSrc, vUv - vec2(uStep.x, -uStep.y), uLod).a;
+  float o = textureLod(uSrc, vUv + vec2(uStep.x * 2.0, 0.0), uLod).a
+          + textureLod(uSrc, vUv - vec2(uStep.x * 2.0, 0.0), uLod).a
+          + textureLod(uSrc, vUv + vec2(0.0, uStep.y * 2.0), uLod).a
+          + textureLod(uSrc, vUv - vec2(0.0, uStep.y * 2.0), uLod).a;
+  outColour = vec4((c + e + d + o) / 20.0);
 }`;
 
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
@@ -254,7 +293,7 @@ export function probeGL() {
     r.setSigma(1.5);
     r.setTau(1);
     const seg = r.segData;
-    seg[0] = 10; seg[1] = 32; seg[2] = 54; seg[3] = 32; seg[4] = 1; seg[5] = 1;
+    seg[0] = 10; seg[1] = 32; seg[2] = 54; seg[3] = 32; seg[4] = 1;
     r.decay(1 / 60);
     r.deposit(1);
     r.present();
@@ -300,13 +339,14 @@ export function createGL(canvas) {
     state.lost = true;
   }, false);
 
-  let progDecay, progCopy, progBeam, progTone, progHalo;
+  let progDecay, progCopy, progBeam, progTone, progHalo, progBlur;
   try {
     progDecay = program(gl, VERT_QUAD, FRAG_DECAY);
     progCopy = program(gl, VERT_QUAD, FRAG_COPY);
     progBeam = program(gl, VERT_BEAM, FRAG_BEAM);
     progTone = program(gl, VERT_QUAD, FRAG_TONE);
     progHalo = program(gl, VERT_QUAD, FRAG_HALO);
+    progBlur = program(gl, VERT_QUAD, FRAG_BLUR);
   } catch (e) {
     return null;                                  // shader trouble: fall back
   }
@@ -318,7 +358,7 @@ export function createGL(canvas) {
 
   const MAX_SEG = 32768;
   const segBuf = gl.createBuffer();
-  const segData = new Float32Array(MAX_SEG * 6);   // x0,y0,x1,y1,energy,swell
+  const segData = new Float32Array(MAX_SEG * 5);   // x0,y0,x1,y1,energy
   gl.bindBuffer(gl.ARRAY_BUFFER, segBuf);
   gl.bufferData(gl.ARRAY_BUFFER, segData.byteLength, gl.DYNAMIC_DRAW);
 
@@ -326,6 +366,8 @@ export function createGL(canvas) {
   const display = { tex: null, fbo: null, w: 0, h: 0 };
   const scratch = { tex: null, fbo: null, w: 0, h: 0 };
   const haloIn = { tex: null, fbo: null, w: 0, h: 0 };
+  const haloNear = { tex: null, fbo: null, w: 0, h: 0 };
+  const haloWide = { tex: null, fbo: null, w: 0, h: 0 };
 
   /** Allocate without destroying anything: a resize has to COPY the old
    *  accumulation first, and deleting it up front is how the picture got wiped
@@ -371,6 +413,7 @@ export function createGL(canvas) {
   /* Only allocated when 光晕 is first switched on: with it off the render path is
      byte for byte what it was, one full-screen pass cheaper. */
   const makeHaloSrc = (w, h) => allocTexture(w, h, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, true);
+  const makeHaloBlur = (w, h) => allocTexture(w, h, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE);
 
   const state = {
     ok: true,
@@ -423,6 +466,8 @@ export function createGL(canvas) {
     adopt(display, nextDisplay);
     if (scratch.tex && (scratch.w !== w || scratch.h !== h)) adopt(scratch, makeTarget(w, h));
     if (haloIn.tex && (haloIn.w !== w || haloIn.h !== h)) adopt(haloIn, makeHaloSrc(w, h));
+    if (haloNear.tex && (haloNear.w !== w || haloNear.h !== h)) adopt(haloNear, makeHaloBlur(w, h));
+    if (haloWide.tex && (haloWide.w !== w || haloWide.h !== h)) adopt(haloWide, makeHaloBlur(w, h));
     state.width = w;
     state.height = h;
   }
@@ -458,22 +503,20 @@ export function createGL(canvas) {
     const h = target.h; target.h = scratch.h; scratch.h = h;
   }
 
-  /** Add this frame's beam energy. `n` segments of 6 floats:
-   *  x0,y0,x1,y1,energy,swell. */
+  /** Add this frame's beam energy. `n` segments of 5 floats: x0,y0,x1,y1,energy. */
   function deposit(n) {
     if (!n) return;
     state.segments = n;
     gl.bindBuffer(gl.ARRAY_BUFFER, segBuf);
-    gl.bufferSubData(gl.ARRAY_BUFFER, 0, segData, 0, n * 6);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, segData, 0, n * 5);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
     gl.viewport(0, 0, target.w, target.h);
     gl.useProgram(progBeam.p);
-    const stride = 6 * 4;
+    const stride = 5 * 4;
     const p0 = gl.getAttribLocation(progBeam.p, 'aP0');
     const p1 = gl.getAttribLocation(progBeam.p, 'aP1');
     const en = gl.getAttribLocation(progBeam.p, 'aEnergy');
-    const sw = gl.getAttribLocation(progBeam.p, 'aSwell');
     gl.enableVertexAttribArray(p0);
     gl.vertexAttribPointer(p0, 2, gl.FLOAT, false, stride, 0);
     gl.vertexAttribDivisor(p0, 1);
@@ -483,9 +526,6 @@ export function createGL(canvas) {
     gl.enableVertexAttribArray(en);
     gl.vertexAttribPointer(en, 1, gl.FLOAT, false, stride, 16);
     gl.vertexAttribDivisor(en, 1);
-    gl.enableVertexAttribArray(sw);
-    gl.vertexAttribPointer(sw, 1, gl.FLOAT, false, stride, 20);
-    gl.vertexAttribDivisor(sw, 1);
 
     bindQuad(progBeam, gl.getAttribLocation(progBeam.p, 'aCorner'));
     gl.uniform2f(progBeam.uniforms.uViewport, target.w, target.h);
@@ -513,8 +553,28 @@ export function createGL(canvas) {
     gl.drawArrays(gl.TRIANGLES, 0, 6);
   }
 
+  /** Blur one mip level of `from` into a target of that level's own size. */
+  function blurLevel(from, into, lod) {
+    if (!into.tex || into.w !== Math.max(1, from.w >> lod) || into.h !== Math.max(1, from.h >> lod)) {
+      adopt(into, makeHaloBlur(Math.max(1, from.w >> lod), Math.max(1, from.h >> lod)));
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, into.fbo);
+    gl.viewport(0, 0, into.w, into.h);
+    gl.disable(gl.BLEND);
+    gl.useProgram(progBlur.p);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, from.tex);
+    gl.uniform1i(progBlur.uniforms.uSrc, 0);
+    gl.uniform1f(progBlur.uniforms.uLod, lod);
+    gl.uniform2f(progBlur.uniforms.uStep, 1 / Math.max(1, from.w >> lod), 1 / Math.max(1, from.h >> lod));
+    bindQuad(progBlur, gl.getAttribLocation(progBlur.p, 'aPos'));
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+  }
+
   /** Add the halation cloud on top of the tone-mapped frame. */
   function addHalo(from) {
+    blurLevel(from, haloNear, 4);
+    blurLevel(from, haloWide, 6);
     gl.bindFramebuffer(gl.FRAMEBUFFER, display.fbo);
     gl.viewport(0, 0, display.w, display.h);
     gl.disable(gl.BLEND);
@@ -522,6 +582,12 @@ export function createGL(canvas) {
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, from.tex);
     gl.uniform1i(progHalo.uniforms.uSrc, 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, haloNear.tex);
+    gl.uniform1i(progHalo.uniforms.uNear, 1);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, haloWide.tex);
+    gl.uniform1i(progHalo.uniforms.uWide, 2);
     gl.uniform3f(progHalo.uniforms.uColour, state.colour[0], state.colour[1], state.colour[2]);
     gl.uniform1f(progHalo.uniforms.uMix, state.halo);
     bindQuad(progHalo, gl.getAttribLocation(progHalo.p, 'aPos'));
@@ -578,7 +644,7 @@ export function createGL(canvas) {
     setTau(v) { state.tau = Math.max(0, v); },
     setHalo(v) { state.halo = clamp01(v); },
     dispose() {
-      for (const t of [target, display, scratch, haloIn]) {
+      for (const t of [target, display, scratch, haloIn, haloNear, haloWide]) {
         if (t.tex) gl.deleteTexture(t.tex);
         if (t.fbo) gl.deleteFramebuffer(t.fbo);
       }

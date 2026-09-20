@@ -333,6 +333,7 @@ function drawBackground() {
 
 const PX = new Float32Array(MAXN);
 const PY = new Float32Array(MAXN);
+const SEGR = new Float32Array(MAXN);   // raw per-sample step, in pixels
 /* Segment indices grouped by brightness bucket. Building these in the same
    pass that maps samples to pixels means the whole trace is produced with
    ONE pass over the samples plus one canvas op per drawn segment, instead of
@@ -349,7 +350,6 @@ let monoCounter = 0;
 let monoLike = false;
 let lastPeakL = 0;       // previous frame's peaks — auto-gain is smoothed anyway
 let lastPeakR = 0;
-let lastSpotMax = 1;     // widest spot the last frame asked for (1 = the line width)
 let lastDoseMax = 1;     // largest 1/v dose of the last frame (1 = the mean beam speed)
 
 /* ---- energy-model parameters (WebGL path) ------------------------------
@@ -367,57 +367,22 @@ function tauFor(p) {
  *  lineWidth; a Gaussian of sigma = w/2 has the same apparent thickness. */
 function sigmaFor(lw) { return Math.max(0.5, lw * DPR * 0.5); }
 
-/* ---- the opt-in halo, part 1: spot sigma grows with beam current ---------
-   On an analog tube the spot is not a fixed-width pen. Space charge blows the
-   beam up as the current rises, so a beam that DWELLS writes a disc: the core
-   saturates, and the skirt around it is what a photo of a real scope shows as a
-   blob (the round green flare in the reference screenshots, always at the point
-   where the beam slowed down). That is a property of the tube, not the signal,
-   so it gets its own control and defaults to OFF — with 光晕 at 0 the swell is
-   exactly 1 and every pixel the beam touches is the line width, as before.
+/* ---- the halo: halation, the cloud the emitted light makes ----------------
+   Applied to the tone-mapped frame, not to the energy, because the scatter
+   happens to light the phosphor has ALREADY emitted: its input is bounded and
+   its output can never exceed this amplitude. Two earlier attempts got this
+   wrong in instructive ways.
 
-   This is the CORE: space charge blows the beam up as the current rises, so a
-   stroke the beam lingered on ends in a fat saturated cap. The wide cloud that a
-   photo of a real scope shows around the WHOLE figure is a second, separate
-   effect (halation) and is applied after the tone map — see addHalo in gl.js.
+   Doing it in the energy buffer made the halo a wider beam spot. Wrong on the
+   physics (the spot is set by the beam current, not by the writing speed) and
+   wrong on the screen: a dwell deposits thousands of times what saturates the
+   tone map, so the halo term saturated out to its own cutoff and the "glow"
+   ended in a cliff — a flat disc with a hard edge.
 
-   The law is steeper than linear so ordinary writing stays crisp: `dose` is "how
-   many times slower than typical is this segment", so the curve is flat at
-   dose ≈ 1, noticeable around 4, and at the cap for the ≥ 20 of a stopped beam.
-
-   Two consequences worth stating, because they are the point:
-     · the swell multiplies sigma but leaves the profile's PEAK alone, so the core
-       keeps its brightness and the energy goes into the skirt — a halo, not a
-       blur;
-     · the extra energy really is deposited (it accumulates and decays like the
-       rest), so raising 光晕 also raises the overall exposure. One control, both
-       effects, exactly as on the instrument. */
-const HALO_BASE = 0.05;    // a badly focused tube is fatter everywhere
-const HALO_DOSE = 2.2;     // halation gain, at the reference dose below
-const HALO_REF = 4;        // dose (× the mean beam speed) that counts as a dwell
-const HALO_POW = 1.5;      // steeper than linear: ordinary writing stays crisp
-/* The cap is deliberately modest now that the cloud carries the size: a cropped
-   saturated disc is a hard-edged thing (255 out to its edge and then nothing),
-   and at x12 it ended in a cliff of its own. The reference stroke ends are balls
-   of roughly three line widths, so that is where this stops. */
-const HALO_MAX = 4;        // cap on the core swell
-/* `dose` is the same 1/v ratio the brightness uses: the core swells where the
-   beam lingered, which is also where the brightness is. */
-function swellFor(dose) {
-  if (!S.halo) return 1;
-  const h = clamp(S.halo / 100, 0, 1);
-  const d = Math.min(dose, 50) / HALO_REF;
-  return Math.min(HALO_MAX, 1 + h * (HALO_BASE + HALO_DOSE * Math.pow(d, HALO_POW)));
-}
-
-/* ---- the halo, part 2: halation, the cloud the emitted light makes --------
-   A separate effect from the spot, and applied to the tone-mapped frame instead
-   of to the energy: the scatter happens to light the phosphor has ALREADY
-   emitted, so its input is bounded and its output can never exceed this
-   amplitude. Mixing it into the energy buffer instead is what made the first
-   attempt a flat disc with a hard edge — a dwell deposits thousands of times
-   what saturates the tone map, so every term of the spot, halo included, was
-   driven into saturation out to its own cutoff and the "glow" ended in a cliff.
+   Making sigma vary per segment also beaded the trace like a string of dots,
+   because adjacent samples have different doses and therefore different widths.
+   The round flare at a stroke end in the reference photos is not a wider spot at
+   all: it is the cloud around a bright point.
 
    The slider runs the amplitude all the way to 0.9 because the two reference
    cases are far apart: around a dense figure the wide taps already average 20-40
@@ -532,11 +497,10 @@ function drawTrace(L, R, capacity, n, live) {
   const eps = PLOT * 0.00002;
   const blankAt = S.blankRatio * ref;   // explicit drop threshold, no hidden clamp
   const topBucket = BUCKETS - 1;
-  /* ---- ONE pass: map to pixels, track peaks, bucket the segments ------ */
+  /* ---- pass 1: map to pixels, track peaks, measure the step lengths --- */
   let peakL = 0, peakR = 0, total = 0;
   let prevX = 0, prevY = 0;
   let segN = 0;                       // instances handed to the energy renderer
-  let spotMax = 1;                    // widest spot this frame (光晕 effect, for tests)
   let doseMax = 1;                    // largest dose this frame (for tests)
   if (blanking) BUCKET_N.fill(0);
 
@@ -558,12 +522,40 @@ function drawTrace(L, R, capacity, n, live) {
     if (i > 0) {
       const dx = x - prevX, dy = y - prevY;
       const s = Math.sqrt(dx * dx + dy * dy);
+      SEGR[i] = s;
       total += s;
+    }
+    prevX = x;
+    prevY = y;
+  }
+
+  /* ---- pass 2: deposit, with the dose smoothed along the path ---------
+     Brightness is 1/speed, and on a REAL tube that is a property of a stroke:
+     the beam lingers along a slow one and races through a fast one. Sample by
+     sample, though, the step jitters (the trace of an audio signal is not a
+     smooth curve at 44 kHz), so a raw 1/step flickers at the sample pitch and
+     the trace comes out BEADED — a string of little dots, which is exactly what
+     it looked like. A phosphor does not see individual samples either: the spot
+     is a few pixels wide, so what it integrates is the average speed over its
+     own width. That is the ±3 sample box below, and it is why the dashes are
+     stroke-length rather than dot-length. */
+  for (let i = 1; i < n; i++) {
+    const s = SEGR[i];
+    {
+      const j0 = i > 3 ? i - 3 : 1, j1 = i + 3 < n ? i + 3 : n - 1;
+      let sum = 0;
+      for (let j = j0; j <= j1; j++) sum += SEGR[j];
+      const sSmooth = sum / (j1 - j0 + 1);
+      const x = PX[i];
+      const y = PY[i];
+      const prevX = PX[i - 1];
+      const prevY = PY[i - 1];
       // Retrace blanking is an explicit comparison against the running mean
       // speed, NOT a side effect of the bucket index. Making it explicit is
       // what lets the threshold be a number you can state, test, and set:
       // a segment is dropped when it is more than blankRatio times faster
-      // than the typical beam speed.
+      // than the typical beam speed. It uses the RAW step: a retrace is a
+      // retrace, and averaging would smear it back in.
       if (!blanking || s <= blankAt) {
         /* Brightness ∝ 1/speed, and on a real tube that ratio is what makes a
            trace DASHED: a stroke the beam lingers on blazes while the fast
@@ -572,7 +564,7 @@ function drawTrace(L, R, capacity, n, live) {
            ≈ 0.01 px), not a display floor — a floor near the mean step would
            flatten the whole law into a 2x range and the picture would read as a
            uniformly bright web whose contrast comes from self-overlap instead. */
-        const dose = ref / (s + eps);           // 1/v, in units of the mean step
+        const dose = ref / (sSmooth + eps);     // 1/v, in units of the mean step
         if (dose > doseMax) doseMax = dose;
         if (GL) {
           /* Energy model: the same 1/v law, but it ADDS — no ladder to quantise
@@ -580,19 +572,12 @@ function drawTrace(L, R, capacity, n, live) {
              only stops a stationary beam from overflowing a half float; 64 is
              already far past full brightness. */
           if (segN < GL.maxSegments) {
-            const o = segN * 6;
-            /* The halo rides the same dose as the brightness — it is the same
-               dwell. That is why the flare differs from photo to photo: a beam
-               that brushed a corner swells a little, one that stopped swells to
-               the cap. */
-            const sw = S.halo ? swellFor(dose) : 1;
+            const o = segN * 5;
             GL.segData[o] = prevX;
             GL.segData[o + 1] = prevY;
             GL.segData[o + 2] = x;
             GL.segData[o + 3] = y;
             GL.segData[o + 4] = Math.min(dose, 64);
-            GL.segData[o + 5] = sw;
-            if (sw > spotMax) spotMax = sw;
             segN++;
           }
         } else if (blanking) {
@@ -607,8 +592,6 @@ function drawTrace(L, R, capacity, n, live) {
         }
       }
     }
-    prevX = x;
-    prevY = y;
   }
 
   if (blanking) {
@@ -629,23 +612,19 @@ function drawTrace(L, R, capacity, n, live) {
   if (GL) {
     if (S.beamDot && segN < GL.maxSegments) {
       // A zero-length segment with a lot of energy IS a stationary beam: the
-      // spot profile makes the dot, and at high 光晕 it makes the blob too.
-      const o = segN * 6;
-      const sw = swellFor(4);
+      // spot profile makes the dot, and the cloud makes it a flare.
+      const o = segN * 5;
       GL.segData[o] = PX[n - 1];
       GL.segData[o + 1] = PY[n - 1];
       GL.segData[o + 2] = PX[n - 1] + 0.01;
       GL.segData[o + 3] = PY[n - 1] + 0.01;
       GL.segData[o + 4] = 4;
-      GL.segData[o + 5] = sw;
-      if (sw > spotMax) spotMax = sw;
       segN++;
     }
     GL.deposit(segN);
   } else {
     paintInto(tctx, n, S.intensity);
   }
-  lastSpotMax = spotMax;      // stays 1 on the Canvas path: no dose-dependent spot
   lastDoseMax = doseMax;
 
 
@@ -837,7 +816,6 @@ function state() {
     plot: { x: PLOT_X, y: PLOT_Y, size: PLOT },
     workMs: workAvg,
     halo: S.halo,
-    spotMax: lastSpotMax,
     doseMax: lastDoseMax,
     work: {
       trimmed: workTrimmed(0.25),   // load-proof headline number
