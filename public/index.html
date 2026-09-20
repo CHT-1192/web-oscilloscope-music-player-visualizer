@@ -117,7 +117,7 @@
         <h3>电子束 <span>beam</span></h3>
         <label class="row" title="束流曝光量。能量模型下细线需要更大的值才和粗线一样亮，所以范围到 4"><span>亮度</span><input type="range" data-set="intensity" min="0.05" max="4" step="0.01" /><output data-out="intensity"></output></label>
         <label class="row"><span>线宽</span><input type="range" data-set="lineWidth" min="0.5" max="3" step="0.05" /><output data-out="lineWidth"></output></label>
-        <label class="row" title="模拟管的束流散焦：束流越大光点越胖（空间电荷把电子束吹开），所以走得慢的地方会积成一个亮核加一圈光晕，走快的地方还是细线。和亮度一起变，因为光晕就是剂量本身。0 = 关（光点恒等于线宽）"><span>光晕</span><input type="range" data-set="halo" min="0" max="100" step="1" /><output data-out="halo"></output></label>
+        <label class="row" title="halation：荧光粉发出的光在粉层和玻璃里横向散射，所以整个图形周围浮起一层又宽又暗的雾，亮点则被糊成亮球。它加在色调映射之后，因此亮度有上限、不会糊掉笔画。密集图形上很明显，单根细线周围几乎看不见 —— 这是卷积本来的样子。0 = 关（画面与从前逐像素一致）"><span>光晕</span><input type="range" data-set="halo" min="0" max="100" step="1" /><output data-out="halo"></output></label>
         <label class="row"><span>余辉</span><input type="range" data-set="persistence" min="0" max="100" step="1" /><output data-out="persistence"></output></label>
         <label class="row" title="余辉衰减撞上 8 位量化地板后留下的永久痕迹。余辉越高地板越高，所以「余辉拉高」会留下更亮的残影。0 = 关（定期彻底擦除），越大残留越明显"><span>残留</span><input type="range" data-set="residue" min="0" max="100" step="1" /><output data-out="residue"></output></label>
         <label class="row"><span>颜色</span><input type="color" data-set="color" /><output data-out="color"></output></label>
