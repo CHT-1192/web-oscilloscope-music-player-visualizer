@@ -747,7 +747,10 @@ async function renderTests(pw, rq = '') {
       return [-0.02 + 0.04 * ((t - 0.5) / 0.5), -0.5];           // ...then a creep
     };
   }, mode);
-  const spotOf = () => page.evaluate(() => window.__scope.state.spotMax);
+  const spotOf = () => page.evaluate(() => {
+    const s = window.__scope.state;
+    return { spot: s.spotMax, dose: s.doseMax };
+  });
   const setCtl = (key, v) => page.evaluate(([k, val]) => {
     const el = document.querySelector(`[data-set="${k}"]`);
     el.value = String(val);
@@ -793,18 +796,39 @@ async function renderTests(pw, rq = '') {
   await setCtl('halo', 0);
   await setSynth('uniform');
   await page.waitForTimeout(1500);
-  const spotUniform0 = await spotOf();
+  const uni0 = await spotOf();
   await setSynth('stationary');
   await page.waitForTimeout(1500);
-  const spotFlat0 = await spotOf();
+  const flat0 = await spotOf();
 
   await setCtl('halo', 100);
   await setSynth('uniform');
   await page.waitForTimeout(1500);
-  const spotUniform100 = await spotOf();
+  const uni100 = await spotOf();
   await setSynth('stationary');
   await page.waitForTimeout(1500);
-  const spotFlat100 = await spotOf();
+  const flat100 = await spotOf();
+  const spotUniform0 = uni0.spot, spotFlat0 = flat0.spot;
+  const spotUniform100 = uni100.spot, spotFlat100 = flat100.spot;
+
+  /* The DOSES are where the dashes come from, so assert them directly: a beam
+     that never moves must deposit orders of magnitude more per unit length than
+     one sweeping at the mean speed. A display-sized floor in the denominator
+     (PLOT x 0.0015 ≈ 1.7x the mean step of a 600 px plot, which is what this
+     used to be) flattens that to ~2x, and the trace then renders as a uniformly
+     bright web whose contrast comes only from self-overlap. */
+  if (flat0.dose > 8 && uni0.dose > 0.5 && uni0.dose < 3) {
+    ok('the 1/v dose is unbounded above the mean',
+      `stationary x${flat0.dose.toFixed(0)} vs sweeping x${uni0.dose.toFixed(2)}`);
+  } else {
+    bad('the 1/v dose is unbounded above the mean',
+      JSON.stringify({ stationary: flat0.dose, uniform: uni0.dose }));
+  }
+  if (Math.abs(flat100.dose - flat0.dose) < 1e-6) {
+    ok('the dose does not depend on the halo slider', `x${flat100.dose.toFixed(0)}`);
+  } else {
+    bad('the dose does not depend on the halo slider', `${flat0.dose} vs ${flat100.dose}`);
+  }
 
   if (isGL) {
     if (spotUniform0 === 1 && spotFlat0 === 1) {

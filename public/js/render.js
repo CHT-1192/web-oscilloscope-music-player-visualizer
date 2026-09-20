@@ -350,6 +350,7 @@ let monoLike = false;
 let lastPeakL = 0;       // previous frame's peaks — auto-gain is smoothed anyway
 let lastPeakR = 0;
 let lastSpotMax = 1;     // widest spot the last frame asked for (1 = the line width)
+let lastDoseMax = 1;     // largest 1/v dose of the last frame (1 = the mean beam speed)
 
 /* ---- energy-model parameters (WebGL path) ------------------------------
    The Canvas path fades with a per-frame alpha a(p); the energy path decays with
@@ -395,14 +396,8 @@ const HALO_DOSE = 2.2;     // halation gain, at the reference dose below
 const HALO_REF = 4;        // dose (× the mean beam speed) that counts as a dwell
 const HALO_POW = 1.5;      // steeper than linear: ordinary writing stays crisp
 const HALO_MAX = 12;       // cap: 3σ of this is the widest footprint ever drawn
-/* The halo's dose is the same 1/v ratio the brightness uses, but floored at 2 %
-   of the mean step instead of the brightness floor (`eps`, which is ~1.7x the
-   mean step on a 600 px plot). The brightness floor is there to hold the
-   calibrated contrast inside the tone map's range; halation is a material effect
-   and answers to the real dwell. Sharing one floor hides the effect entirely:
-   with eps in the denominator the slowest observable segment is only ~2x slower
-   than the mean, so a stationary beam would swell by 1.3x and read as nothing. */
-const HALO_FLOOR = 0.02;
+/* `dose` is the same 1/v ratio the brightness uses: halation answers to the
+   dwell, and the dwell is what the brightness is a picture of. */
 function swellFor(dose) {
   if (!S.halo) return 1;
   const h = clamp(S.halo / 100, 0, 1);
@@ -446,6 +441,14 @@ function fadeLayer(ctx, alpha) {
    completely, and anything weaker leaves a predictable amount of it behind.
    Hence one slider, expressed as the residue you are willing to keep.
 */
+/* The ten alpha rungs are the 8-bit path's whole brightness range, and they have
+   to cover the same 1/v ratio the energy path does. Mapping the dose straight
+   onto them puts an ordinary segment on rung 5 of 9 at alpha 0.5·base instead of
+   the 0.44·base this path was calibrated at, and its afterglow accumulates, so
+   the picture drifts brighter. Scaling the rungs by this keeps the operating
+   point and spends the extra headroom on the slow strokes — which is where the
+   dashes are. */
+const BUCKET_ALPHA = 0.8;
 const SCRUB_EVERY = 180;   // frames (~3 s, longer than any visible trail)
 let scrubTick = 0;
 
@@ -495,7 +498,10 @@ function drawTrace(L, R, capacity, n, live) {
 
   const blanking = S.blanking;
   const ref = Math.max(refSpeed > 0 ? refSpeed : PLOT * 0.01, PLOT * 0.0004);
-  const eps = PLOT * 0.0015;          // only keeps ref/s finite as s -> 0
+  /* ONLY a numerical floor: it keeps ref/s finite when a segment does not move
+     at all. It is deliberately tiny — anything comparable to the mean beam step
+     would compress the 1/v law (see the dose below). */
+  const eps = PLOT * 0.00002;
   const blankAt = S.blankRatio * ref;   // explicit drop threshold, no hidden clamp
   const topBucket = BUCKETS - 1;
   /* ---- ONE pass: map to pixels, track peaks, bucket the segments ------ */
@@ -503,6 +509,7 @@ function drawTrace(L, R, capacity, n, live) {
   let prevX = 0, prevY = 0;
   let segN = 0;                       // instances handed to the energy renderer
   let spotMax = 1;                    // widest spot this frame (光晕 effect, for tests)
+  let doseMax = 1;                    // largest dose this frame (for tests)
   if (blanking) BUCKET_N.fill(0);
 
   for (let i = 0; i < n; i++) {
@@ -530,7 +537,15 @@ function drawTrace(L, R, capacity, n, live) {
       // a segment is dropped when it is more than blankRatio times faster
       // than the typical beam speed.
       if (!blanking || s <= blankAt) {
-        const w = ref / (s + eps);              // brightness ∝ 1/speed
+        /* Brightness ∝ 1/speed, and on a real tube that ratio is what makes a
+           trace DASHED: a stroke the beam lingers on blazes while the fast
+           sweep between strokes falls below the phosphor's visible threshold.
+           So the denominator carries only a numerical floor (2e-5 of the plot
+           ≈ 0.01 px), not a display floor — a floor near the mean step would
+           flatten the whole law into a 2x range and the picture would read as a
+           uniformly bright web whose contrast comes from self-overlap instead. */
+        const dose = ref / (s + eps);           // 1/v, in units of the mean step
+        if (dose > doseMax) doseMax = dose;
         if (GL) {
           /* Energy model: the same 1/v law, but it ADDS — no ladder to quantise
              into and no ceiling, because the tone map saturates instead. The cap
@@ -538,18 +553,26 @@ function drawTrace(L, R, capacity, n, live) {
              already far past full brightness. */
           if (segN < GL.maxSegments) {
             const o = segN * 6;
-            const sw = S.halo ? swellFor(ref / (s + ref * HALO_FLOOR)) : 1;
+            /* The halo rides the same dose as the brightness — it is the same
+               dwell. That is why the flare differs from photo to photo: a beam
+               that brushed a corner swells a little, one that stopped swells to
+               the cap. */
+            const sw = S.halo ? swellFor(dose) : 1;
             GL.segData[o] = prevX;
             GL.segData[o + 1] = prevY;
             GL.segData[o + 2] = x;
             GL.segData[o + 3] = y;
-            GL.segData[o + 4] = Math.min(w, 64);
+            GL.segData[o + 4] = Math.min(dose, 64);
             GL.segData[o + 5] = sw;
             if (sw > spotMax) spotMax = sw;
             segN++;
           }
         } else if (blanking) {
-          let b = Math.ceil(w * topBucket);
+          /* The 8-bit path has ten rungs and no accumulation buffer, so it maps
+             the same dose through a saturating curve (the tone map's, cheaply):
+             a linear ramp would pin every ordinary segment to the top rung and
+             lose the dashes. */
+          let b = Math.ceil(topBucket * (1 - 1 / (1 + dose)));
           if (b > topBucket) b = topBucket;
           else if (b < 1) b = 1;
           BUCKET_IDX[b * MAXN + BUCKET_N[b]++] = i - 1;
@@ -595,6 +618,7 @@ function drawTrace(L, R, capacity, n, live) {
     paintInto(tctx, n, S.intensity);
   }
   lastSpotMax = spotMax;      // stays 1 on the Canvas path: no dose-dependent spot
+  lastDoseMax = doseMax;
 
 
   if (S.beamDot && tctx) {
@@ -636,7 +660,7 @@ function paintInto(ctx, n, base) {
     const cnt = BUCKET_N[b];
     if (!cnt) continue;
     const base0 = b * MAXN;
-    ctx.globalAlpha = clamp(base * (b / (BUCKETS - 1)), 0, 1);
+    ctx.globalAlpha = clamp(base * BUCKET_ALPHA * (b / (BUCKETS - 1)), 0, 1);
     ctx.beginPath();
     let prev = -2;
     for (let k = 0; k < cnt; k++) {
@@ -785,6 +809,7 @@ function state() {
     workMs: workAvg,
     halo: S.halo,
     spotMax: lastSpotMax,
+    doseMax: lastDoseMax,
     work: {
       trimmed: workTrimmed(0.25),   // load-proof headline number
       trimmed50: workTrimmed(0.5),
