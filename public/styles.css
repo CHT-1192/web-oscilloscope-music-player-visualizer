@@ -89,7 +89,6 @@ body.dragging::after {
   display: block;
 }
 #bg { z-index: 0; }
-#burnin { z-index: 1; }   /* burn-in sits under the live trace, over the graticule */
 #trace { z-index: 2; }
 
 /* ── empty state ──────────────────────────────────────────────────────── */

@@ -19,7 +19,6 @@ const {
 } = core;
 
 const bctx = dom.bg.getContext('2d');
-const nctx = dom.burnin.getContext('2d');   // burn-in layer
 const tctx = dom.trace.getContext('2d');
 
 /* --------------------------------------------------------------- geometry */
@@ -131,7 +130,6 @@ function layout() {
 
   DPR = dpr; W = w; H = h;
   dom.bg.width = W; dom.bg.height = H;           // redrawn from scratch below
-  resizeKeeping(dom.burnin, nctx);
   resizeKeeping(dom.trace, tctx);
 
   // Stay centred in the canvas and only shrink when a panel genuinely does
@@ -148,7 +146,7 @@ function layout() {
 
 /** Resize a canvas without throwing away what is already on it.
     Assigning canvas.width clears the bitmap, which would silently destroy the
-    accumulated afterglow / burn-in on every window resize or fullscreen
+    accumulated afterglow on every window resize or fullscreen
     toggle — and the whole point of those layers is that they persist. */
 function resizeKeeping(canvas, ctx) {
   const ow = canvas.width, oh = canvas.height;
@@ -364,50 +362,6 @@ function scrubAlpha() {
   return Math.min(1, 3.125 / (r * 100));    // leaves a floor of roughly 16*r
 }
 
-/* ---- burn-in ---------------------------------------------------------- */
-/* A second accumulation layer that decays far more slowly than the afterglow:
-   it models phosphor *damage* rather than phosphor decay. Exposure is the
-   time-integral of beam current, so it is laid down from the same beam path
-   (and the same retrace blanking) as the trace — still crisp strokes, not a
-   blur, which is why it is not glow.
-
-   The exposure rate comes from a FRACTIONAL BUDGET, not from a tiny alpha: a
-   per-frame alpha below ~1/255 rounds away on an 8-bit backing store and
-   would never accumulate at all, so each painting uses a healthy alpha and
-   paintings are simply spaced out.
-   0 % = off, 100 % = permanent (never decays). */
-const burn = { on: false, gain: 0.03, rate: 0, decay: 0, fadeStep: 0.25, fadeEvery: 0, budget: 0, fadeTick: 0 };
-
-function clearBurnIn() {
-  if (!W || !H) return;
-  nctx.setTransform(1, 0, 0, 1, 0, 0);
-  nctx.globalAlpha = 1;
-  nctx.globalCompositeOperation = 'source-over';
-  nctx.clearRect(0, 0, W, H);
-  burn.budget = 0;
-  flags.redraw = true;
-}
-
-function updateBurnIn(force) {
-  const b = clamp(S.burnIn / 100, 0, 1);
-  const was = burn.on;
-  burn.on = b > 0.001;
-  burn.gain = 0.03;                      // per painting, well clear of 1/255
-  burn.rate = 0.02 * b;                  // paintings per frame (~1.2/s at 100%)
-  // Steady state for a pixel the beam keeps returning to is roughly
-  // rate*gain/decay, so decay is what decides how strong the ghost gets.
-  burn.decay = b >= 0.99 ? 0 : 0.0012 * Math.pow(1 - b, 2);
-  // Step big enough to clear the floor, then spread the steps out to keep the
-  // requested average rate.
-  burn.fadeStep = 0.25;
-  burn.fadeEvery = burn.decay > 0 ? Math.max(1, Math.round(burn.fadeStep / burn.decay)) : 0;
-  burn.budget = 0;
-  burn.fadeTick = 0;
-  if (force || (was && !burn.on)) clearBurnIn();   // turning it off wipes the ghost
-  const out = document.querySelector('[data-out="burnIn"]');
-  if (out) out.textContent = FORMATTERS.burnIn(S.burnIn);
-}
-
 /** Rising zero-crossing on X, used to phase-lock periodic figures. */
 function findTrigger(buf, maxStart, n) {
   const limit = Math.min(maxStart, n);
@@ -510,16 +464,6 @@ function drawTrace(L, R, capacity, n, live) {
   /* ---- paint ---------------------------------------------------------- */
   paintInto(tctx, n, S.intensity);
 
-  // Burn-in: the same beam path laid down a second time on the slow layer.
-  // Only while the beam is actually running — a paused scope has no beam, so
-  // re-settling the afterglow must not keep exposing the phosphor.
-  if (burn.on && live) {
-    burn.budget += burn.rate;
-    if (burn.budget >= 1) {
-      burn.budget = Math.min(burn.budget - 1, 1);   // never burst after a stall
-      paintInto(nctx, n, burn.gain);
-    }
-  }
 
   if (S.beamDot) {
     const lw = S.lineWidth * DPR;
@@ -531,7 +475,7 @@ function drawTrace(L, R, capacity, n, live) {
 }
 
 /** Stroke the already-computed beam path into `ctx` with `base` as the peak
-    alpha. Shared by the afterglow layer and the burn-in layer. */
+    alpha. This is the only accumulation layer left. */
 function paintInto(ctx, n, base) {
   ctx.lineWidth = S.lineWidth * DPR;
   ctx.lineJoin = 'round';
@@ -627,13 +571,6 @@ function loop(ts) {
   } else {
     fadeLayer(tctx, fadeAlpha());
   }
-  // The burn-in decays far more slowly than the afterglow, so its fade runs
-  // in chunky steps. A small per-frame step would sit below the quantisation
-  // floor and the ghost would never decay at all.
-  if (burn.on && burn.fadeEvery > 0 && ++burn.fadeTick >= burn.fadeEvery) {
-    burn.fadeTick = 0;
-    fadeLayer(nctx, burn.fadeStep);
-  }
 
   try {
     drawTrace(frame.L, frame.R, frame.capacity, winSize(), live);
@@ -710,7 +647,6 @@ function startLoop() { if (!rafId) rafId = requestAnimationFrame(loop); }
 export {
   adaptQuality,
   applyScale,
-  clearBurnIn,
   composite,
   drawBackground,
   drawTrace,
@@ -735,7 +671,6 @@ export {
   setTickHandler,
   startLoop,
   state,
-  updateBurnIn,
   updatePerfBadge,
   workSorted,
   workStat,

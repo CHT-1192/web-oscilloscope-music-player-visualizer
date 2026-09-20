@@ -21,7 +21,6 @@ const {
 
 const {
   drawBackground,
-  updateBurnIn,
 } = render;
 
 function applyAccent(color) {
@@ -50,7 +49,6 @@ function syncControlsFromState() {
     br.disabled = !S.blanking;
     if (br.parentElement) br.parentElement.classList.toggle('is-off', !S.blanking);
   }
-  updateBurnIn(false);
   applyAccent(S.color);
 }
 

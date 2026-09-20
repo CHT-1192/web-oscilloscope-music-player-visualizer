@@ -37,7 +37,6 @@ const {
   effectiveDpr,
   layout,
   state,
-  updateBurnIn,
 } = render;
 
 const {
@@ -87,7 +86,6 @@ function bindControls() {
       if (out) out.textContent = FORMATTERS[key](S[key]);
       if (key === 'color') applyAccent(S.color);
       if (key === 'windowIdx') { render.resetRefSpeed(); applyAnalyserSize(); }
-      if (key === 'burnIn') updateBurnIn(false);
       flags.redraw = true;
       noteSettingsChanged();
     };
@@ -259,7 +257,6 @@ function resetSettings() {
   applyAnalyserSize();
   applyScale();
   drawBackground();
-  updateBurnIn(true);
   presets.setActivePreset('默认');   // defaults ARE the 默认 preset, for the keys it covers
   noteSettingsChanged();
 }

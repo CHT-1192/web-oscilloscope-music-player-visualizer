@@ -57,7 +57,7 @@ const BUCKETS = 10;          // velocity-blanking brightness levels (bucket 0 = 
 const DEFAULTS = {
   gainX: 1, gainY: 1, offX: 0, offY: 0,
   windowIdx: 2,
-  intensity: 0.9, lineWidth: 1.75, persistence: 24, burnIn: 0, residue: 0,
+  intensity: 0.9, lineWidth: 1.75, persistence: 24, residue: 0,
   blankRatio: 10,
   color: '#3dff9c',
   rateMode: 'auto',
@@ -86,7 +86,6 @@ const FORMATTERS = {
   intensity: (v) => Number(v).toFixed(2),
   lineWidth: (v) => Number(v).toFixed(2) + ' px',
   persistence: (v) => Math.round(v) + ' %',
-  burnIn: (v) => (v <= 0 ? '关' : v >= 99.5 ? '永久' : Math.round(v) + ' %'),
   residue: (v) => (v <= 0 ? '关' : Math.round(v) + ' %'),
   blankRatio: (v) => (Number.isInteger(v) ? String(v) : v.toFixed(1)) + '×',
   color: (v) => String(v).toUpperCase(),
@@ -96,7 +95,7 @@ const PRESET_COLORS = ['#3dff9c', '#7ef9ff', '#ffd166', '#ff6b8a', '#c4a7ff', '#
 /* -------------------------------------------------------------------- dom */
 
 const dom = {
-  stage: $('stage'), bg: $('bg'), burnin: $('burnin'), trace: $('trace'), audio: $('audio'),
+  stage: $('stage'), bg: $('bg'), trace: $('trace'), audio: $('audio'),
   hint: $('dropHint'), hintNote: $('hintNote'),
   trackTitle: $('trackTitle'), trackSub: $('trackSub'),
   seek: $('seek'), tCur: $('tCur'), tDur: $('tDur'),

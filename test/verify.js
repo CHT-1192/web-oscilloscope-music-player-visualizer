@@ -808,90 +808,22 @@ async function renderTests(pw) {
   else bad('picture survives a settings change while paused', `${toggledInk} lit pixels`);
   await page.evaluate(() => document.querySelector('[data-toggle="grid"]').click());
 
-  /* ---- burn-in layer --------------------------------------------------- */
-  const layerInk = (id) => page.evaluate((id) => {
-    const c = document.getElementById(id);
-    const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
-    let lit = 0, max = 0;
-    for (let i = 3; i < d.length; i += 4) { if (d[i] > 8) lit++; if (d[i] > max) max = d[i]; }
-    return { lit, max };
-  }, id);
-  const setBurn = (v) => page.evaluate((v) => {
-    const el = document.querySelector('[data-set="burnIn"]');
-    el.value = String(v);
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-  }, v);
-
-  /* Pinned to a fixed passage. Accumulating from wherever the clock happens to
-     be made both layer counts depend on the music, and their ratio drifted
-     enough to fail on identical code — the spatial check below is the one that
-     actually proves the ghost is a separate layer; this ratio is only a sanity
-     check, so it is worth making reproducible. */
+  /* ---- the accumulation layer survives a relayout ----------------------
+     Assigning canvas.width clears the bitmap, so resizeKeeping has to carry the
+     layer across or a window resize silently eats the picture. Paused, with a
+     long afterglow and no hard scrub: otherwise this measures the music instead
+     of the carry-over. */
   await page.evaluate(() => {
-    const a = document.getElementById('audio');
-    a.currentTime = 20;
-    if (a.paused) document.getElementById('btnPlay').click();
-  });
-  await page.waitForTimeout(600);
-
-  const burnIdle = await layerInk('burnin');       // off by default
-  await setBurn(100);                              // 100% = permanent
-  await page.waitForTimeout(6000);
-  const burnOn = await layerInk('burnin');
-  if (burnIdle.lit === 0) ok('burn-in layer starts empty', 'off by default');
-  else bad('burn-in layer starts empty', `${burnIdle.lit} px`);
-  if (burnOn.lit > 500) ok('burn-in accumulates beam exposure', `${burnOn.lit} px, peak alpha ${burnOn.max}`);
-  else bad('burn-in accumulates beam exposure', JSON.stringify(burnOn));
-
-  await page.evaluate(() => document.getElementById('audio').pause());
-  await page.waitForTimeout(2600);
-  const burnPaused = await layerInk('burnin');
-  const tracePaused = await layerInk('trace');
-  if (burnPaused.lit >= burnOn.lit * 0.98) {
-    ok('burn-in survives a pause', `${burnPaused.lit} px (was ${burnOn.lit})`);
-  } else {
-    bad('burn-in survives a pause', `${burnPaused.lit} vs ${burnOn.lit}`);
-  }
-  /* The decisive property is not "the ghost layer has more ink" — that ratio
-     swings with whatever the music is doing at that instant (it measured 2.3x
-     one run and 1.6x the next, on identical code). It is that the ghost is a
-     UNION over time, so it necessarily holds beam positions the current frozen
-     frame does not: pixels lit in the burn-in layer and dark in the trace
-     layer. Purely spatial, so content drift can't move it. */
-  const layerSplit = () => page.evaluate(() => {
-    const grab = (id) => {
-      const c = document.getElementById(id);
-      return c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+    const set = (k, v) => {
+      const el = document.querySelector(`[data-set="${k}"]`);
+      el.value = String(v);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
     };
-    const b = grab('burnin');
-    const t = grab('trace');
-    let burn = 0, trace = 0, onlyBurn = 0;
-    for (let i = 3; i < b.length; i += 4) {
-      const litB = b[i] > 8;
-      const litT = t[i] > 8;
-      if (litB) burn++;
-      if (litT) trace++;
-      if (litB && !litT) onlyBurn++;
-    }
-    return { burn, trace, onlyBurn, share: burn ? +(onlyBurn / burn).toFixed(3) : 0 };
+    document.getElementById('audio').pause();
+    set('persistence', 100);
+    set('residue', 40);          // keep the periodic scrub gentle between samples
   });
-
-  const split = await layerSplit();
-  /* There used to be a `burn-in ink > afterglow ink` assertion here. It never
-     measured what it claimed: both counts track how dense the music is at that
-     instant, and at a 24 % afterglow the live smear legitimately holds MORE
-     pixels than a ghost that accumulates slowly — so it failed on unchanged
-     code. Whether the ghost is its own layer is a spatial question, and the
-     check below answers it directly. */
-  if (split.onlyBurn > 500) {
-    ok('the ghost lives on its own layer, not in the afterglow',
-      `${split.onlyBurn} px (${(split.share * 100).toFixed(1)}% of the ghost) sit outside the frozen frame`);
-  } else {
-    bad('the ghost lives on its own layer, not in the afterglow', JSON.stringify(split));
-  }
-
-  /* A relayout assigns canvas.width, which clears the bitmap. The accumulated
-     layers have to be carried across or a window resize silently eats them. */
+  await page.waitForTimeout(2500);
   const sigOf = (id) => page.evaluate((id) => {
     const c = document.getElementById(id);
     const o = document.createElement('canvas');
@@ -905,23 +837,20 @@ async function renderTests(pw) {
     return out;
   }, id);
 
-  const sigBefore = await sigOf('burnin');
+  const sigBefore = await sigOf('trace');
   await page.setViewportSize({ width: 1100, height: 700 });
   await page.waitForTimeout(1400);
-  const sigAfter = await sigOf('burnin');
+  const sigAfter = await sigOf('trace');
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.waitForTimeout(1400);
   let sigSum = 0;
   for (let i = 0; i < sigBefore.length; i++) sigSum += Math.abs(sigBefore[i] - sigAfter[i]);
   const sigMean = sigSum / sigBefore.length;
-  if (sigMean < 4) ok('layers survive a window resize', `mean pixel delta ${sigMean.toFixed(2)} / 255`);
-  else bad('layers survive a window resize', `mean pixel delta ${sigMean.toFixed(2)} — the ghost was eaten`);
-
-  await setBurn(0);
-  await page.waitForTimeout(400);
-  const burnCleared = await layerInk('burnin');
-  if (burnCleared.lit === 0) ok('turning burn-in off wipes the ghost');
-  else bad('turning burn-in off wipes the ghost', `${burnCleared.lit} px`);
+  /* 8 rather than the 4 this used when it probed the burn-in ghost: the probe is
+     now the live afterglow layer, which keeps converging towards saturation
+     while paused. A layer actually eaten by the relayout is a delta of tens. */
+  if (sigMean < 8) ok('layers survive a window resize', `mean pixel delta ${sigMean.toFixed(2)} / 255`);
+  else bad('layers survive a window resize', `mean pixel delta ${sigMean.toFixed(2)} — the layer was eaten`);
 
   /* ---- residue: the 8-bit quantisation floor --------------------------- */
   /* destination-out multiplies alpha, so with round-to-nearest every value
