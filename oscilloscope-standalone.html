@@ -886,6 +886,8 @@ body.idle { cursor: none; }
           <button type="button" class="pill" data-toggle="autoGain" title="按峰值自动调整整体增益，两轴同系数">自动增益</button>
           <button type="button" class="pill" data-toggle="grid" title="显示刻度网格">网格</button>
           <button type="button" class="pill" data-toggle="beamDot" title="在束当前位置画一个亮点">光点</button>
+          <button type="button" class="pill" data-toggle="invertY" title="Y 轴反向。XY 示波器的约定是 X=左声道、Y=右声道且正方向朝上，但曲子的制作方式（或参考视频里那台机器的 Y 输入）可能正好相反 —— 那就把这一轴翻过来">Y 反向</button>
+          <button type="button" class="pill" data-toggle="invertX" title="X 轴反向。和 Y 反向同理：某些曲子/素材是按相反的手性录的">X 反向</button>
         </div>
         <label class="row" title="比平均束速快多少倍以上的线段直接不画。1× 最激进，15× 以上基本等于不消隐；不同曲子的回扫速度不一样"><span>消隐阈值</span><input type="range" data-set="blankRatio" min="1" max="15" step="0.5" /><output data-out="blankRatio"></output></label>
         <button type="button" class="ghost" id="btnReset">恢复默认设置</button>
@@ -1041,6 +1043,7 @@ const DEFAULTS = {
   rateMode: 'auto',
   renderScale: 'auto',
   blanking: true, trigger: false, autoGain: false, grid: true, beamDot: false,
+  invertX: false, invertY: false,
 };
 const S = Object.assign({}, DEFAULTS);
 const winSize = () => WINDOW_CHOICES[clamp(S.windowIdx | 0, 0, WINDOW_CHOICES.length - 1)];
@@ -1056,8 +1059,10 @@ const flags = { redraw: true, settle: 0 };
 const PRESET_KEYS = Object.keys(DEFAULTS).filter((k) => k !== 'rateMode' && k !== 'renderScale');
 
 const FORMATTERS = {
-  gainX: (v) => Number(v).toFixed(2),
-  gainY: (v) => Number(v).toFixed(2),
+  // The readout carries the sign the mapping actually uses, so a flipped axis
+  // never shows a bare "+1.00" next to a picture that is upside down.
+  gainX: (v) => (S.invertX ? '-' : '') + Number(v).toFixed(2),
+  gainY: (v) => (S.invertY ? '-' : '') + Number(v).toFixed(2),
   offX: (v) => Number(v).toFixed(2),
   offY: (v) => Number(v).toFixed(2),
   windowIdx: () => winSize().toLocaleString('en-US'),
@@ -2665,8 +2670,12 @@ function drawTrace(L, R, capacity, n, live) {
   const scale = PLOT * 0.5;
   const ox = PLOT_X + PLOT * 0.5 + S.offX * scale;
   const oy = PLOT_Y + PLOT * 0.5 - S.offY * scale;
-  const kx = scale * S.gainX * agGain;
-  const ky = scale * S.gainY * agGain;
+  /* Which way each axis points is a property of the MATERIAL, not a mistake to
+     be corrected silently: X = left channel and Y = right with positive up is the
+     scope convention, and a track made for the opposite polarity (or a reference
+     video whose Y input was inverted) will look mirrored without these. */
+  const kx = scale * S.gainX * agGain * (S.invertX ? -1 : 1);
+  const ky = scale * S.gainY * agGain * (S.invertY ? -1 : 1);
 
   const blanking = S.blanking;
   const ref = Math.max(refSpeed > 0 ? refSpeed : PLOT * 0.01, PLOT * 0.0004);
@@ -4215,6 +4224,14 @@ function bindControls() {
       if (key === 'grid') drawBackground();
       if (key === 'trigger') render.resetRefSpeed();
       if (key === 'blanking') syncControlsFromState();   // enable/disable the threshold row
+      /* 反向 flips the axis the gain readout describes, so the readout has to
+         follow it: a bare "+1.00" next to an upside-down picture is a control
+         lying about the value in use. */
+      if (key === 'invertX' || key === 'invertY') {
+        const gainKey = key === 'invertX' ? 'gainX' : 'gainY';
+        const out = document.querySelector(`[data-out="${gainKey}"]`);
+        if (out) out.textContent = FORMATTERS[gainKey](S[gainKey]);
+      }
       flags.redraw = true;
       noteSettingsChanged();
     });

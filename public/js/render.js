@@ -486,8 +486,12 @@ function drawTrace(L, R, capacity, n, live) {
   const scale = PLOT * 0.5;
   const ox = PLOT_X + PLOT * 0.5 + S.offX * scale;
   const oy = PLOT_Y + PLOT * 0.5 - S.offY * scale;
-  const kx = scale * S.gainX * agGain;
-  const ky = scale * S.gainY * agGain;
+  /* Which way each axis points is a property of the MATERIAL, not a mistake to
+     be corrected silently: X = left channel and Y = right with positive up is the
+     scope convention, and a track made for the opposite polarity (or a reference
+     video whose Y input was inverted) will look mirrored without these. */
+  const kx = scale * S.gainX * agGain * (S.invertX ? -1 : 1);
+  const ky = scale * S.gainY * agGain * (S.invertY ? -1 : 1);
 
   const blanking = S.blanking;
   const ref = Math.max(refSpeed > 0 ? refSpeed : PLOT * 0.01, PLOT * 0.0004);

@@ -120,6 +120,14 @@ function bindControls() {
       if (key === 'grid') drawBackground();
       if (key === 'trigger') render.resetRefSpeed();
       if (key === 'blanking') syncControlsFromState();   // enable/disable the threshold row
+      /* 反向 flips the axis the gain readout describes, so the readout has to
+         follow it: a bare "+1.00" next to an upside-down picture is a control
+         lying about the value in use. */
+      if (key === 'invertX' || key === 'invertY') {
+        const gainKey = key === 'invertX' ? 'gainX' : 'gainY';
+        const out = document.querySelector(`[data-out="${gainKey}"]`);
+        if (out) out.textContent = FORMATTERS[gainKey](S[gainKey]);
+      }
       flags.redraw = true;
       noteSettingsChanged();
     });

@@ -132,6 +132,8 @@
           <button type="button" class="pill" data-toggle="autoGain" title="按峰值自动调整整体增益，两轴同系数">自动增益</button>
           <button type="button" class="pill" data-toggle="grid" title="显示刻度网格">网格</button>
           <button type="button" class="pill" data-toggle="beamDot" title="在束当前位置画一个亮点">光点</button>
+          <button type="button" class="pill" data-toggle="invertY" title="Y 轴反向。XY 示波器的约定是 X=左声道、Y=右声道且正方向朝上，但曲子的制作方式（或参考视频里那台机器的 Y 输入）可能正好相反 —— 那就把这一轴翻过来">Y 反向</button>
+          <button type="button" class="pill" data-toggle="invertX" title="X 轴反向。和 Y 反向同理：某些曲子/素材是按相反的手性录的">X 反向</button>
         </div>
         <label class="row" title="比平均束速快多少倍以上的线段直接不画。1× 最激进，15× 以上基本等于不消隐；不同曲子的回扫速度不一样"><span>消隐阈值</span><input type="range" data-set="blankRatio" min="1" max="15" step="0.5" /><output data-out="blankRatio"></output></label>
         <button type="button" class="ghost" id="btnReset">恢复默认设置</button>

@@ -63,6 +63,7 @@ const DEFAULTS = {
   rateMode: 'auto',
   renderScale: 'auto',
   blanking: true, trigger: false, autoGain: false, grid: true, beamDot: false,
+  invertX: false, invertY: false,
 };
 const S = Object.assign({}, DEFAULTS);
 const winSize = () => WINDOW_CHOICES[clamp(S.windowIdx | 0, 0, WINDOW_CHOICES.length - 1)];
@@ -78,8 +79,10 @@ const flags = { redraw: true, settle: 0 };
 const PRESET_KEYS = Object.keys(DEFAULTS).filter((k) => k !== 'rateMode' && k !== 'renderScale');
 
 const FORMATTERS = {
-  gainX: (v) => Number(v).toFixed(2),
-  gainY: (v) => Number(v).toFixed(2),
+  // The readout carries the sign the mapping actually uses, so a flipped axis
+  // never shows a bare "+1.00" next to a picture that is upside down.
+  gainX: (v) => (S.invertX ? '-' : '') + Number(v).toFixed(2),
+  gainY: (v) => (S.invertY ? '-' : '') + Number(v).toFixed(2),
   offX: (v) => Number(v).toFixed(2),
   offY: (v) => Number(v).toFixed(2),
   windowIdx: () => winSize().toLocaleString('en-US'),
