@@ -21,6 +21,7 @@ const {
 
 const {
   drawBackground,
+  rendererKind,
 } = render;
 
 function applyAccent(color) {
@@ -31,6 +32,21 @@ function applyAccent(color) {
   drawBackground();   // the graticule is tinted from the same colour
   flags.redraw = true;
 }
+/* Two rows describe the RENDERER rather than the signal: 残留 is the 8-bit
+   quantisation floor (Canvas path only — the energy renderer has no floor to
+   scrub) and 光晕 is the energy renderer's dose-dependent spot (the Canvas path
+   strokes a constant width). A slider that moves and changes nothing is a
+   control lying about the value in use, so the inert one is disabled and the
+   label says why. The real title lives in `data-title` so both can coexist. */
+function rendererOnlyRow(key, active, why) {
+  const el = document.querySelector(`[data-set="${key}"]`);
+  if (!el) return;
+  if (!el.dataset.title) el.dataset.title = el.title || '';
+  el.disabled = !active;
+  el.title = active ? el.dataset.title : why;
+  if (el.parentElement) el.parentElement.classList.toggle('is-off', !active);
+}
+
 function syncControlsFromState() {
   for (const el of document.querySelectorAll('[data-set]')) {
     el.value = S[el.dataset.set];
@@ -49,6 +65,9 @@ function syncControlsFromState() {
     br.disabled = !S.blanking;
     if (br.parentElement) br.parentElement.classList.toggle('is-off', !S.blanking);
   }
+  const gl2 = rendererKind() === 'webgl2';
+  rendererOnlyRow('halo', gl2, '光晕需要 WebGL 能量渲染器（当前是 Canvas 2D 回退）');
+  rendererOnlyRow('residue', !gl2, '残留是 8 位路径的量化地板，能量渲染器没有地板要擦（当前是 WebGL）');
   applyAccent(S.color);
 }
 

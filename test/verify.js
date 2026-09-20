@@ -725,6 +725,155 @@ async function renderTests(pw, rq = '') {
   });
   await page.waitForTimeout(400);
 
+  /* ---- the halo (光晕): a spot that grows with the dose ------------------
+     The reference is a photo of a real analog scope: a thin trace with a big
+     round flare exactly where the beam slowed down. So these assert the SHAPE of
+     that law rather than "a slider exists":
+
+       · the DOSE decides, not the slider — a constant-speed figure barely swells
+         while a stationary beam reaches the cap;
+       · the halo is still the spot: nothing appears beyond 3σ of the widest one,
+         which is what keeps this a bigger beam and not a bloom pass;
+       · and the row is honest about which renderer implements it. */
+  const setSynth = (mode) => page.evaluate((m) => {
+    window.__synthMode = m;
+    window.__synthPoint = function (t) {
+      const k = window.__synthMode;
+      if (k === 'uniform') {                     // constant pixel speed: no dwell
+        return [0.7 * Math.cos(t * Math.PI * 2), 0.7 * Math.sin(t * Math.PI * 2)];
+      }
+      if (k === 'stationary') return [0, 0];     // a beam that never moves
+      if (t < 0.5) return [-0.6 + 1.2 * (t / 0.5), -0.5];        // a slow line
+      return [-0.02 + 0.04 * ((t - 0.5) / 0.5), -0.5];           // ...then a creep
+    };
+  }, mode);
+  const spotOf = () => page.evaluate(() => window.__scope.state.spotMax);
+  const setCtl = (key, v) => page.evaluate(([k, val]) => {
+    const el = document.querySelector(`[data-set="${k}"]`);
+    el.value = String(val);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  }, [key, v]);
+
+  const isGL = (await page.evaluate(() => window.__scope.state.renderer)) === 'webgl2';
+  const haloRow = await page.evaluate(() => {
+    const el = document.querySelector('[data-set="halo"]');
+    return {
+      min: el.min, max: el.max, step: el.step, def: el.value,
+      disabled: el.disabled, title: el.title,
+      out: document.querySelector('[data-out="halo"]').textContent,
+      residueOff: document.querySelector('[data-set="residue"]').disabled,
+    };
+  });
+  if (haloRow.min === '0' && haloRow.max === '100' && haloRow.def === '0' && haloRow.out === '关') {
+    ok('the halo control exists, defaults to off', `${haloRow.min}-${haloRow.max}, label 关`);
+  } else {
+    bad('the halo control exists, defaults to off', JSON.stringify(haloRow));
+  }
+  if (haloRow.disabled === !isGL) {
+    ok('the halo row is enabled exactly where it works', `${isGL ? 'webgl2' : 'canvas2d'} → disabled=${haloRow.disabled}`);
+  } else {
+    bad('the halo row is enabled exactly where it works', JSON.stringify({ isGL, disabled: haloRow.disabled }));
+  }
+  /* The mirror image: 残留 scrubs an 8-bit floor the energy path does not have,
+     so leaving THAT one live under WebGL is the same lie in reverse. */
+  if (haloRow.residueOff === isGL) {
+    ok('the residue row is enabled exactly where it works', `disabled=${haloRow.residueOff}`);
+  } else {
+    bad('the residue row is enabled exactly where it works', JSON.stringify({ isGL, disabled: haloRow.residueOff }));
+  }
+
+  /* The trigger is what makes the drawn window deterministic here: findTrigger
+     shifts the start index, and a dwell that slid out of the drawn half of the
+     buffer would silently turn these measurements into "nothing happened". */
+  await page.evaluate(() => {
+    const b = document.querySelector('[data-toggle="trigger"]');
+    if (b && b.getAttribute('aria-pressed') === 'true') b.click();
+  });
+
+  await setCtl('halo', 0);
+  await setSynth('uniform');
+  await page.waitForTimeout(1500);
+  const spotUniform0 = await spotOf();
+  await setSynth('stationary');
+  await page.waitForTimeout(1500);
+  const spotFlat0 = await spotOf();
+
+  await setCtl('halo', 100);
+  await setSynth('uniform');
+  await page.waitForTimeout(1500);
+  const spotUniform100 = await spotOf();
+  await setSynth('stationary');
+  await page.waitForTimeout(1500);
+  const spotFlat100 = await spotOf();
+
+  if (isGL) {
+    if (spotUniform0 === 1 && spotFlat0 === 1) {
+      ok('光晕 0: the spot is exactly the line width', `uniform ${spotUniform0}, stationary ${spotFlat0}`);
+    } else {
+      bad('光晕 0: the spot is exactly the line width', `${spotUniform0} / ${spotFlat0}`);
+    }
+    if (spotFlat100 >= 11 && spotFlat100 > spotUniform100 * 3) {
+      ok('光晕 follows the dose, not the slider',
+        `stationary beam swells to x${spotFlat100} vs x${spotUniform100.toFixed(2)} at constant speed`);
+    } else {
+      bad('光晕 follows the dose, not the slider', `stationary ${spotFlat100}, uniform ${spotUniform100}`);
+    }
+    if (spotUniform100 > 1.1 && spotUniform100 < 2.5) {
+      ok('an ordinary segment only softens a little', `x${spotUniform100.toFixed(2)} at 光晕 100`);
+    } else {
+      bad('an ordinary segment only softens a little', `x${spotUniform100}`);
+    }
+  } else {
+    if (spotUniform100 === 1 && spotFlat100 === 1) {
+      ok('Canvas path: the spot stays the line width (why the row is disabled)', 'x1 at 光晕 100');
+    } else {
+      bad('Canvas path: the spot stays the line width', `${spotUniform100} / ${spotFlat100}`);
+    }
+  }
+
+  /* The halo must still be a spot: ink 10 px off the beam appears only with 光晕
+     on, and 80 px off (past 3σ of the widest allowed swell) is black even at
+     100 %. 3σ of sigma x12 at this device pixel ratio is ~31 px, so 80 px is a
+     real bound rather than a number that happens to pass. */
+  const inkAbove = (dy) => page.evaluate(([d, cx, cy, size]) => {
+    const y = Math.round(cy + 0.25 * size - d);      // the line sits at cy + PLOT/4
+    const x = Math.round(cx);
+    const px = window.__scope.readTrace(x - 6, y - 6, 13, 13);
+    let max = 0;
+    for (let i = 3; i < px.length; i += 4) if (px[i] > max) max = px[i];
+    return max;
+  }, [dy, center.cx, center.cy, center.PLOT]);
+
+  await setSynth('line');
+  await page.waitForTimeout(1800);
+  const nearOn = await inkAbove(10);
+  const farOn = await inkAbove(80);
+  await setCtl('halo', 0);
+  await page.waitForTimeout(1800);
+  const nearOff = await inkAbove(10);
+
+  if (isGL) {
+    if (nearOn > 20 && nearOff === 0) {
+      ok('the halo really is drawn around a dwelling beam', `10 px off the beam: ${nearOff} → ${nearOn}`);
+    } else {
+      bad('the halo really is drawn around a dwelling beam', `10 px: ${nearOff} off, ${nearOn} at 100`);
+    }
+    if (farOn === 0) {
+      ok('the halo is still the spot, not a tail', '80 px off the beam: 0 even at 光晕 100');
+    } else {
+      bad('the halo is still the spot, not a tail', `80 px off the beam: ${farOn}`);
+    }
+  } else if (nearOn === 0 && farOn === 0) {
+    ok('Canvas path: no halo at all, as the disabled row says', '10 px and 80 px off the beam: 0');
+  } else {
+    bad('Canvas path: no halo at all', `${nearOn} / ${farOn}`);
+  }
+
+  await page.evaluate(() => {
+    const b = document.querySelector('[data-toggle="trigger"]');
+    if (b && b.getAttribute('aria-pressed') === 'false') b.click();
+  });
+
   /* ---- glow instrumentation ------------------------------------------- */
   const glow = await page.evaluate(() => window.__glow);
   if (glow.shadowBlur === 0 && glow.lighter === 0 && glow.filter === 0) {

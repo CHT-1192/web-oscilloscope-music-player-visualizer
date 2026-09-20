@@ -58,7 +58,7 @@ const DEFAULTS = {
   gainX: 1, gainY: 1, offX: 0, offY: 0,
   windowIdx: 2,
   intensity: 0.9, lineWidth: 1.75, persistence: 24, residue: 0,
-  blankRatio: 10,
+  blankRatio: 10, halo: 0,
   color: '#3dff9c',
   rateMode: 'auto',
   renderScale: 'auto',
@@ -88,6 +88,7 @@ const FORMATTERS = {
   persistence: (v) => Math.round(v) + ' %',
   residue: (v) => (v <= 0 ? '关' : Math.round(v) + ' %'),
   blankRatio: (v) => (Number.isInteger(v) ? String(v) : v.toFixed(1)) + '×',
+  halo: (v) => (v <= 0 ? '关' : Math.round(v) + ' %'),
   color: (v) => String(v).toUpperCase(),
 };
 

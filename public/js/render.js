@@ -349,6 +349,7 @@ let monoCounter = 0;
 let monoLike = false;
 let lastPeakL = 0;       // previous frame's peaks — auto-gain is smoothed anyway
 let lastPeakR = 0;
+let lastSpotMax = 1;     // widest spot the last frame asked for (1 = the line width)
 
 /* ---- energy-model parameters (WebGL path) ------------------------------
    The Canvas path fades with a per-frame alpha a(p); the energy path decays with
@@ -364,6 +365,50 @@ function tauFor(p) {
 /** Beam spot sigma in device pixels. The Canvas path strokes a line of width
  *  lineWidth; a Gaussian of sigma = w/2 has the same apparent thickness. */
 function sigmaFor(lw) { return Math.max(0.5, lw * DPR * 0.5); }
+
+/* ---- the opt-in halo: spot sigma grows with beam current -----------------
+   On an analog tube the spot is not a fixed-width pen. Space charge blows the
+   beam up as the current rises, so a beam that DWELLS writes a disc: the core
+   saturates, and the skirt around it is what a photo of a real scope shows as a
+   blob (the round green flare in the reference screenshots, always at the point
+   where the beam slowed down). That is a property of the tube, not the signal,
+   so it gets its own control and defaults to OFF — with 光晕 at 0 the swell is
+   exactly 1 and every pixel the beam touches is the line width, as before.
+
+   The law is the light output's, not the geometry's: halation scales with the
+   luminance the phosphor is putting out, and a phosphor saturates, so the halo
+   is nearly absent on ordinary writing and grows steeply once the beam has
+   lingered. `w` is "how many times slower than typical is this segment", so the
+   curve is flat at w ≈ 1 (a crisp line), noticeable around w = 4, and a wide
+   blob at the w ≥ 16 of a near-stationary beam — which is exactly the shape in
+   the reference photos: thin trace, big round flare where the beam slowed down.
+
+   Two consequences worth stating, because they are the point:
+     · the swell multiplies sigma but leaves the profile's PEAK alone, so the core
+       keeps its brightness and the energy goes into the skirt — a halo, not a
+       blur;
+     · the extra energy really is deposited (it accumulates and decays like the
+       rest), so raising 光晕 also raises the overall exposure. One control, both
+       effects, exactly as on the instrument. */
+const HALO_BASE = 0.05;    // a badly focused tube is fatter everywhere
+const HALO_DOSE = 2.2;     // halation gain, at the reference dose below
+const HALO_REF = 4;        // dose (× the mean beam speed) that counts as a dwell
+const HALO_POW = 1.5;      // steeper than linear: ordinary writing stays crisp
+const HALO_MAX = 12;       // cap: 3σ of this is the widest footprint ever drawn
+/* The halo's dose is the same 1/v ratio the brightness uses, but floored at 2 %
+   of the mean step instead of the brightness floor (`eps`, which is ~1.7x the
+   mean step on a 600 px plot). The brightness floor is there to hold the
+   calibrated contrast inside the tone map's range; halation is a material effect
+   and answers to the real dwell. Sharing one floor hides the effect entirely:
+   with eps in the denominator the slowest observable segment is only ~2x slower
+   than the mean, so a stationary beam would swell by 1.3x and read as nothing. */
+const HALO_FLOOR = 0.02;
+function swellFor(dose) {
+  if (!S.halo) return 1;
+  const h = clamp(S.halo / 100, 0, 1);
+  const d = Math.min(dose, 50) / HALO_REF;
+  return Math.min(HALO_MAX, 1 + h * (HALO_BASE + HALO_DOSE * Math.pow(d, HALO_POW)));
+}
 
 /** Energy deposited per unit of 1/v, per frame. The constant is measured, not
  *  chosen: sweeping it on the busiest passage of a line-type track and counting
@@ -453,11 +498,11 @@ function drawTrace(L, R, capacity, n, live) {
   const eps = PLOT * 0.0015;          // only keeps ref/s finite as s -> 0
   const blankAt = S.blankRatio * ref;   // explicit drop threshold, no hidden clamp
   const topBucket = BUCKETS - 1;
-
   /* ---- ONE pass: map to pixels, track peaks, bucket the segments ------ */
   let peakL = 0, peakR = 0, total = 0;
   let prevX = 0, prevY = 0;
   let segN = 0;                       // instances handed to the energy renderer
+  let spotMax = 1;                    // widest spot this frame (光晕 effect, for tests)
   if (blanking) BUCKET_N.fill(0);
 
   for (let i = 0; i < n; i++) {
@@ -492,12 +537,15 @@ function drawTrace(L, R, capacity, n, live) {
              only stops a stationary beam from overflowing a half float; 64 is
              already far past full brightness. */
           if (segN < GL.maxSegments) {
-            const o = segN * 5;
+            const o = segN * 6;
+            const sw = S.halo ? swellFor(ref / (s + ref * HALO_FLOOR)) : 1;
             GL.segData[o] = prevX;
             GL.segData[o + 1] = prevY;
             GL.segData[o + 2] = x;
             GL.segData[o + 3] = y;
             GL.segData[o + 4] = Math.min(w, 64);
+            GL.segData[o + 5] = sw;
+            if (sw > spotMax) spotMax = sw;
             segN++;
           }
         } else if (blanking) {
@@ -530,19 +578,23 @@ function drawTrace(L, R, capacity, n, live) {
   if (GL) {
     if (S.beamDot && segN < GL.maxSegments) {
       // A zero-length segment with a lot of energy IS a stationary beam: the
-      // spot profile makes the dot.
-      const o = segN * 5;
+      // spot profile makes the dot, and at high 光晕 it makes the blob too.
+      const o = segN * 6;
+      const sw = swellFor(4);
       GL.segData[o] = PX[n - 1];
       GL.segData[o + 1] = PY[n - 1];
       GL.segData[o + 2] = PX[n - 1] + 0.01;
       GL.segData[o + 3] = PY[n - 1] + 0.01;
       GL.segData[o + 4] = 4;
+      GL.segData[o + 5] = sw;
+      if (sw > spotMax) spotMax = sw;
       segN++;
     }
     GL.deposit(segN);
   } else {
     paintInto(tctx, n, S.intensity);
   }
+  lastSpotMax = spotMax;      // stays 1 on the Canvas path: no dose-dependent spot
 
 
   if (S.beamDot && tctx) {
@@ -731,6 +783,8 @@ function state() {
     canvas: { w: W, h: H },
     plot: { x: PLOT_X, y: PLOT_Y, size: PLOT },
     workMs: workAvg,
+    halo: S.halo,
+    spotMax: lastSpotMax,
     work: {
       trimmed: workTrimmed(0.25),   // load-proof headline number
       trimmed50: workTrimmed(0.5),

@@ -871,6 +871,7 @@ body.idle { cursor: none; }
         <h3>电子束 <span>beam</span></h3>
         <label class="row" title="束流曝光量。能量模型下细线需要更大的值才和粗线一样亮，所以范围到 4"><span>亮度</span><input type="range" data-set="intensity" min="0.05" max="4" step="0.01" /><output data-out="intensity"></output></label>
         <label class="row"><span>线宽</span><input type="range" data-set="lineWidth" min="0.5" max="3" step="0.05" /><output data-out="lineWidth"></output></label>
+        <label class="row" title="模拟管的束流散焦：束流越大光点越胖（空间电荷把电子束吹开），所以走得慢的地方会积成一个亮核加一圈光晕，走快的地方还是细线。和亮度一起变，因为光晕就是剂量本身。0 = 关（光点恒等于线宽）"><span>光晕</span><input type="range" data-set="halo" min="0" max="100" step="1" /><output data-out="halo"></output></label>
         <label class="row"><span>余辉</span><input type="range" data-set="persistence" min="0" max="100" step="1" /><output data-out="persistence"></output></label>
         <label class="row" title="余辉衰减撞上 8 位量化地板后留下的永久痕迹。余辉越高地板越高，所以「余辉拉高」会留下更亮的残影。0 = 关（定期彻底擦除），越大残留越明显"><span>残留</span><input type="range" data-set="residue" min="0" max="100" step="1" /><output data-out="residue"></output></label>
         <label class="row"><span>颜色</span><input type="color" data-set="color" /><output data-out="color"></output></label>
@@ -1035,7 +1036,7 @@ const DEFAULTS = {
   gainX: 1, gainY: 1, offX: 0, offY: 0,
   windowIdx: 2,
   intensity: 0.9, lineWidth: 1.75, persistence: 24, residue: 0,
-  blankRatio: 10,
+  blankRatio: 10, halo: 0,
   color: '#3dff9c',
   rateMode: 'auto',
   renderScale: 'auto',
@@ -1065,6 +1066,7 @@ const FORMATTERS = {
   persistence: (v) => Math.round(v) + ' %',
   residue: (v) => (v <= 0 ? '关' : Math.round(v) + ' %'),
   blankRatio: (v) => (Number.isInteger(v) ? String(v) : v.toFixed(1)) + '×',
+  halo: (v) => (v <= 0 ? '关' : Math.round(v) + ' %'),
   color: (v) => String(v).toUpperCase(),
 };
 
@@ -1532,14 +1534,23 @@ __define("js/gl.js", function (__exp, __req) {
  *    · the tone map saturates smoothly instead of clipping, so overlapping
  *      passes brighten and then stop, like a phosphor.
  *
- *  What it deliberately does NOT do: no blur, no bloom, no widening. The
- *  additive step happens on the pixel the beam actually hits (spread only by the
- *  beam's own Gaussian spot, i.e. the line width) and never bleeds brightness
- *  into the neighbourhood. That is what keeps "no glow" true here even though
- *  the accumulation is additive.
+ *  What it deliberately does NOT do: no blur, no bloom pass. The additive step
+ *  happens on the pixel the beam actually hits, spread only by the beam's own
+ *  Gaussian spot, and that spot's sigma is the caller's business. With a constant
+ *  sigma (the default) brightness never bleeds into a pixel the beam did not
+ *  illuminate, which is what keeps "no glow" true even though the accumulation is
+ *  additive.
+ *
+ *  The one exception is opt-in and physical rather than cosmetic: a real tube's
+ *  spot SWELLS with beam current (space charge, and a finite cathode), so a beam
+ *  that dwells writes a disc instead of a point — the saturated core plus the
+ *  skirt around it is the halo you see on an analog scope. That is a per-instance
+ *  sigma (`aSwell`, 1 = the line width), still a Gaussian whose tail is
+ *  subtracted so it reaches exactly zero at 3σ: the halo stays inside the spot
+ *  and never becomes an unbounded tail. The caller defaults it to 1.
  *
  *  Everything above is GPU-side; the CPU uploads one instance record per
- *  segment (5 floats) and issues three draw calls per frame.
+ *  segment (6 floats) and issues three draw calls per frame.
  * ========================================================================== */
 
 const VERT_QUAD = `#version 300 es
@@ -1574,8 +1585,9 @@ in vec2 aCorner;                 // the unit quad, 6 vertices, shared by all ins
 in vec2 aP0;                     // segment start, device pixels
 in vec2 aP1;                     // segment end
 in float aEnergy;                // exposure for this segment (∝ 1/speed, 0 = blanked)
+in float aSwell;                 // spot sigma for this segment, in multiples of uHalfWidth
 uniform vec2 uViewport;
-uniform float uHalfWidth;        // Gaussian sigma, in pixels
+uniform float uHalfWidth;        // base Gaussian sigma, in pixels (the line width)
 uniform float uExposure;         // energy per unit of 1/v, per frame
 out vec2 vPos;                   // pixel position
 out vec2 vA;                     // segment start
@@ -1592,7 +1604,8 @@ void main() {
   float len = max(length(seg), 0.0001);
   vec2 dir = seg / len;
   vec2 nrm = vec2(-dir.y, dir.x);
-  float reach = uHalfWidth * 3.0;                     // ~3σ covers the spot
+  float sigma = uHalfWidth * max(aSwell, 0.05);
+  float reach = sigma * 3.0;                          // ~3σ covers the spot
   vec2 along = dir * (len * 0.5 + reach);
   vec2 across = nrm * reach;
   vec2 centre = (aP0 + aP1) * 0.5;
@@ -1602,7 +1615,7 @@ void main() {
   vA = aP0;
   vB = aP1;
   vEnergy = aEnergy;
-  vSigma = uHalfWidth;
+  vSigma = sigma;
   gl_Position = vec4(toClip(p), 0.0, 1.0);
 }`;
 
@@ -1626,10 +1639,12 @@ void main() {
   float t = clamp(dot(vPos - vA, ab) / len2, 0.0, 1.0);
   vec2 closest = vA + ab * t;
   float d = length(vPos - closest);
-  /* Gaussian, but with the tail SUBTRACTED so it reaches exactly zero at 3σ —
-     the quad's edge. A phosphor spot does have Gaussian wings, but an additive
-     tail that never reaches zero is a halo, and "brightness never bleeds into a
-     pixel the beam did not illuminate" is a hard requirement here. */
+  /* Gaussian, but with the tail SUBTRACTED so it reaches exactly zero at 3σ of
+     THIS instance's sigma — the quad's edge. A phosphor spot does have Gaussian
+     wings, but an additive tail that never reaches zero is an unbounded halo, and
+     "brightness never bleeds into a pixel the beam did not illuminate" is a hard
+     requirement here. Swelling sigma (the opt-in halo) widens the spot; it never
+     gives it a tail. */
   float g = exp(-(d * d) / (2.0 * vSigma * vSigma)) - 0.011109;   // exp(-4.5)
   outColour = vec4(vEnergy * uExposure * max(g, 0.0), 0.0, 0.0, 1.0);
 }`;
@@ -1707,7 +1722,7 @@ function probeGL() {
     r.setSigma(1.5);
     r.setTau(1);
     const seg = r.segData;
-    seg[0] = 10; seg[1] = 32; seg[2] = 54; seg[3] = 32; seg[4] = 1;
+    seg[0] = 10; seg[1] = 32; seg[2] = 54; seg[3] = 32; seg[4] = 1; seg[5] = 1;
     r.decay(1 / 60);
     r.deposit(1);
     r.present();
@@ -1770,7 +1785,7 @@ function createGL(canvas) {
 
   const MAX_SEG = 32768;
   const segBuf = gl.createBuffer();
-  const segData = new Float32Array(MAX_SEG * 5);   // x0,y0,x1,y1,energy
+  const segData = new Float32Array(MAX_SEG * 6);   // x0,y0,x1,y1,energy,swell
   gl.bindBuffer(gl.ARRAY_BUFFER, segBuf);
   gl.bufferData(gl.ARRAY_BUFFER, segData.byteLength, gl.DYNAMIC_DRAW);
 
@@ -1903,20 +1918,22 @@ function createGL(canvas) {
     const h = target.h; target.h = scratch.h; scratch.h = h;
   }
 
-  /** Add this frame's beam energy. `n` segments of 5 floats: x0,y0,x1,y1,energy. */
+  /** Add this frame's beam energy. `n` segments of 6 floats:
+   *  x0,y0,x1,y1,energy,swell. */
   function deposit(n) {
     if (!n) return;
     state.segments = n;
     gl.bindBuffer(gl.ARRAY_BUFFER, segBuf);
-    gl.bufferSubData(gl.ARRAY_BUFFER, 0, segData, 0, n * 5);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, segData, 0, n * 6);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
     gl.viewport(0, 0, target.w, target.h);
     gl.useProgram(progBeam.p);
-    const stride = 5 * 4;
+    const stride = 6 * 4;
     const p0 = gl.getAttribLocation(progBeam.p, 'aP0');
     const p1 = gl.getAttribLocation(progBeam.p, 'aP1');
     const en = gl.getAttribLocation(progBeam.p, 'aEnergy');
+    const sw = gl.getAttribLocation(progBeam.p, 'aSwell');
     gl.enableVertexAttribArray(p0);
     gl.vertexAttribPointer(p0, 2, gl.FLOAT, false, stride, 0);
     gl.vertexAttribDivisor(p0, 1);
@@ -1926,6 +1943,9 @@ function createGL(canvas) {
     gl.enableVertexAttribArray(en);
     gl.vertexAttribPointer(en, 1, gl.FLOAT, false, stride, 16);
     gl.vertexAttribDivisor(en, 1);
+    gl.enableVertexAttribArray(sw);
+    gl.vertexAttribPointer(sw, 1, gl.FLOAT, false, stride, 20);
+    gl.vertexAttribDivisor(sw, 1);
 
     bindQuad(progBeam, gl.getAttribLocation(progBeam.p, 'aCorner'));
     gl.uniform2f(progBeam.uniforms.uViewport, target.w, target.h);
@@ -2352,6 +2372,7 @@ let monoCounter = 0;
 let monoLike = false;
 let lastPeakL = 0;       // previous frame's peaks — auto-gain is smoothed anyway
 let lastPeakR = 0;
+let lastSpotMax = 1;     // widest spot the last frame asked for (1 = the line width)
 
 /* ---- energy-model parameters (WebGL path) ------------------------------
    The Canvas path fades with a per-frame alpha a(p); the energy path decays with
@@ -2367,6 +2388,50 @@ function tauFor(p) {
 /** Beam spot sigma in device pixels. The Canvas path strokes a line of width
  *  lineWidth; a Gaussian of sigma = w/2 has the same apparent thickness. */
 function sigmaFor(lw) { return Math.max(0.5, lw * DPR * 0.5); }
+
+/* ---- the opt-in halo: spot sigma grows with beam current -----------------
+   On an analog tube the spot is not a fixed-width pen. Space charge blows the
+   beam up as the current rises, so a beam that DWELLS writes a disc: the core
+   saturates, and the skirt around it is what a photo of a real scope shows as a
+   blob (the round green flare in the reference screenshots, always at the point
+   where the beam slowed down). That is a property of the tube, not the signal,
+   so it gets its own control and defaults to OFF — with 光晕 at 0 the swell is
+   exactly 1 and every pixel the beam touches is the line width, as before.
+
+   The law is the light output's, not the geometry's: halation scales with the
+   luminance the phosphor is putting out, and a phosphor saturates, so the halo
+   is nearly absent on ordinary writing and grows steeply once the beam has
+   lingered. `w` is "how many times slower than typical is this segment", so the
+   curve is flat at w ≈ 1 (a crisp line), noticeable around w = 4, and a wide
+   blob at the w ≥ 16 of a near-stationary beam — which is exactly the shape in
+   the reference photos: thin trace, big round flare where the beam slowed down.
+
+   Two consequences worth stating, because they are the point:
+     · the swell multiplies sigma but leaves the profile's PEAK alone, so the core
+       keeps its brightness and the energy goes into the skirt — a halo, not a
+       blur;
+     · the extra energy really is deposited (it accumulates and decays like the
+       rest), so raising 光晕 also raises the overall exposure. One control, both
+       effects, exactly as on the instrument. */
+const HALO_BASE = 0.05;    // a badly focused tube is fatter everywhere
+const HALO_DOSE = 2.2;     // halation gain, at the reference dose below
+const HALO_REF = 4;        // dose (× the mean beam speed) that counts as a dwell
+const HALO_POW = 1.5;      // steeper than linear: ordinary writing stays crisp
+const HALO_MAX = 12;       // cap: 3σ of this is the widest footprint ever drawn
+/* The halo's dose is the same 1/v ratio the brightness uses, but floored at 2 %
+   of the mean step instead of the brightness floor (`eps`, which is ~1.7x the
+   mean step on a 600 px plot). The brightness floor is there to hold the
+   calibrated contrast inside the tone map's range; halation is a material effect
+   and answers to the real dwell. Sharing one floor hides the effect entirely:
+   with eps in the denominator the slowest observable segment is only ~2x slower
+   than the mean, so a stationary beam would swell by 1.3x and read as nothing. */
+const HALO_FLOOR = 0.02;
+function swellFor(dose) {
+  if (!S.halo) return 1;
+  const h = clamp(S.halo / 100, 0, 1);
+  const d = Math.min(dose, 50) / HALO_REF;
+  return Math.min(HALO_MAX, 1 + h * (HALO_BASE + HALO_DOSE * Math.pow(d, HALO_POW)));
+}
 
 /** Energy deposited per unit of 1/v, per frame. The constant is measured, not
  *  chosen: sweeping it on the busiest passage of a line-type track and counting
@@ -2456,11 +2521,11 @@ function drawTrace(L, R, capacity, n, live) {
   const eps = PLOT * 0.0015;          // only keeps ref/s finite as s -> 0
   const blankAt = S.blankRatio * ref;   // explicit drop threshold, no hidden clamp
   const topBucket = BUCKETS - 1;
-
   /* ---- ONE pass: map to pixels, track peaks, bucket the segments ------ */
   let peakL = 0, peakR = 0, total = 0;
   let prevX = 0, prevY = 0;
   let segN = 0;                       // instances handed to the energy renderer
+  let spotMax = 1;                    // widest spot this frame (光晕 effect, for tests)
   if (blanking) BUCKET_N.fill(0);
 
   for (let i = 0; i < n; i++) {
@@ -2495,12 +2560,15 @@ function drawTrace(L, R, capacity, n, live) {
              only stops a stationary beam from overflowing a half float; 64 is
              already far past full brightness. */
           if (segN < GL.maxSegments) {
-            const o = segN * 5;
+            const o = segN * 6;
+            const sw = S.halo ? swellFor(ref / (s + ref * HALO_FLOOR)) : 1;
             GL.segData[o] = prevX;
             GL.segData[o + 1] = prevY;
             GL.segData[o + 2] = x;
             GL.segData[o + 3] = y;
             GL.segData[o + 4] = Math.min(w, 64);
+            GL.segData[o + 5] = sw;
+            if (sw > spotMax) spotMax = sw;
             segN++;
           }
         } else if (blanking) {
@@ -2533,19 +2601,23 @@ function drawTrace(L, R, capacity, n, live) {
   if (GL) {
     if (S.beamDot && segN < GL.maxSegments) {
       // A zero-length segment with a lot of energy IS a stationary beam: the
-      // spot profile makes the dot.
-      const o = segN * 5;
+      // spot profile makes the dot, and at high 光晕 it makes the blob too.
+      const o = segN * 6;
+      const sw = swellFor(4);
       GL.segData[o] = PX[n - 1];
       GL.segData[o + 1] = PY[n - 1];
       GL.segData[o + 2] = PX[n - 1] + 0.01;
       GL.segData[o + 3] = PY[n - 1] + 0.01;
       GL.segData[o + 4] = 4;
+      GL.segData[o + 5] = sw;
+      if (sw > spotMax) spotMax = sw;
       segN++;
     }
     GL.deposit(segN);
   } else {
     paintInto(tctx, n, S.intensity);
   }
+  lastSpotMax = spotMax;      // stays 1 on the Canvas path: no dose-dependent spot
 
 
   if (S.beamDot && tctx) {
@@ -2734,6 +2806,8 @@ function state() {
     canvas: { w: W, h: H },
     plot: { x: PLOT_X, y: PLOT_Y, size: PLOT },
     workMs: workAvg,
+    halo: S.halo,
+    spotMax: lastSpotMax,
     work: {
       trimmed: workTrimmed(0.25),   // load-proof headline number
       trimmed50: workTrimmed(0.5),
@@ -2820,6 +2894,7 @@ const {
 
 const {
   drawBackground,
+  rendererKind,
 } = render;
 
 function applyAccent(color) {
@@ -2830,6 +2905,21 @@ function applyAccent(color) {
   drawBackground();   // the graticule is tinted from the same colour
   flags.redraw = true;
 }
+/* Two rows describe the RENDERER rather than the signal: 残留 is the 8-bit
+   quantisation floor (Canvas path only — the energy renderer has no floor to
+   scrub) and 光晕 is the energy renderer's dose-dependent spot (the Canvas path
+   strokes a constant width). A slider that moves and changes nothing is a
+   control lying about the value in use, so the inert one is disabled and the
+   label says why. The real title lives in `data-title` so both can coexist. */
+function rendererOnlyRow(key, active, why) {
+  const el = document.querySelector(`[data-set="${key}"]`);
+  if (!el) return;
+  if (!el.dataset.title) el.dataset.title = el.title || '';
+  el.disabled = !active;
+  el.title = active ? el.dataset.title : why;
+  if (el.parentElement) el.parentElement.classList.toggle('is-off', !active);
+}
+
 function syncControlsFromState() {
   for (const el of document.querySelectorAll('[data-set]')) {
     el.value = S[el.dataset.set];
@@ -2848,6 +2938,9 @@ function syncControlsFromState() {
     br.disabled = !S.blanking;
     if (br.parentElement) br.parentElement.classList.toggle('is-off', !S.blanking);
   }
+  const gl2 = rendererKind() === 'webgl2';
+  rendererOnlyRow('halo', gl2, '光晕需要 WebGL 能量渲染器（当前是 Canvas 2D 回退）');
+  rendererOnlyRow('residue', !gl2, '残留是 8 位路径的量化地板，能量渲染器没有地板要擦（当前是 WebGL）');
   applyAccent(S.color);
 }
 

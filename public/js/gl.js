@@ -16,14 +16,23 @@
  *    · the tone map saturates smoothly instead of clipping, so overlapping
  *      passes brighten and then stop, like a phosphor.
  *
- *  What it deliberately does NOT do: no blur, no bloom, no widening. The
- *  additive step happens on the pixel the beam actually hits (spread only by the
- *  beam's own Gaussian spot, i.e. the line width) and never bleeds brightness
- *  into the neighbourhood. That is what keeps "no glow" true here even though
- *  the accumulation is additive.
+ *  What it deliberately does NOT do: no blur, no bloom pass. The additive step
+ *  happens on the pixel the beam actually hits, spread only by the beam's own
+ *  Gaussian spot, and that spot's sigma is the caller's business. With a constant
+ *  sigma (the default) brightness never bleeds into a pixel the beam did not
+ *  illuminate, which is what keeps "no glow" true even though the accumulation is
+ *  additive.
+ *
+ *  The one exception is opt-in and physical rather than cosmetic: a real tube's
+ *  spot SWELLS with beam current (space charge, and a finite cathode), so a beam
+ *  that dwells writes a disc instead of a point — the saturated core plus the
+ *  skirt around it is the halo you see on an analog scope. That is a per-instance
+ *  sigma (`aSwell`, 1 = the line width), still a Gaussian whose tail is
+ *  subtracted so it reaches exactly zero at 3σ: the halo stays inside the spot
+ *  and never becomes an unbounded tail. The caller defaults it to 1.
  *
  *  Everything above is GPU-side; the CPU uploads one instance record per
- *  segment (5 floats) and issues three draw calls per frame.
+ *  segment (6 floats) and issues three draw calls per frame.
  * ========================================================================== */
 
 const VERT_QUAD = `#version 300 es
@@ -58,8 +67,9 @@ in vec2 aCorner;                 // the unit quad, 6 vertices, shared by all ins
 in vec2 aP0;                     // segment start, device pixels
 in vec2 aP1;                     // segment end
 in float aEnergy;                // exposure for this segment (∝ 1/speed, 0 = blanked)
+in float aSwell;                 // spot sigma for this segment, in multiples of uHalfWidth
 uniform vec2 uViewport;
-uniform float uHalfWidth;        // Gaussian sigma, in pixels
+uniform float uHalfWidth;        // base Gaussian sigma, in pixels (the line width)
 uniform float uExposure;         // energy per unit of 1/v, per frame
 out vec2 vPos;                   // pixel position
 out vec2 vA;                     // segment start
@@ -76,7 +86,8 @@ void main() {
   float len = max(length(seg), 0.0001);
   vec2 dir = seg / len;
   vec2 nrm = vec2(-dir.y, dir.x);
-  float reach = uHalfWidth * 3.0;                     // ~3σ covers the spot
+  float sigma = uHalfWidth * max(aSwell, 0.05);
+  float reach = sigma * 3.0;                          // ~3σ covers the spot
   vec2 along = dir * (len * 0.5 + reach);
   vec2 across = nrm * reach;
   vec2 centre = (aP0 + aP1) * 0.5;
@@ -86,7 +97,7 @@ void main() {
   vA = aP0;
   vB = aP1;
   vEnergy = aEnergy;
-  vSigma = uHalfWidth;
+  vSigma = sigma;
   gl_Position = vec4(toClip(p), 0.0, 1.0);
 }`;
 
@@ -110,10 +121,12 @@ void main() {
   float t = clamp(dot(vPos - vA, ab) / len2, 0.0, 1.0);
   vec2 closest = vA + ab * t;
   float d = length(vPos - closest);
-  /* Gaussian, but with the tail SUBTRACTED so it reaches exactly zero at 3σ —
-     the quad's edge. A phosphor spot does have Gaussian wings, but an additive
-     tail that never reaches zero is a halo, and "brightness never bleeds into a
-     pixel the beam did not illuminate" is a hard requirement here. */
+  /* Gaussian, but with the tail SUBTRACTED so it reaches exactly zero at 3σ of
+     THIS instance's sigma — the quad's edge. A phosphor spot does have Gaussian
+     wings, but an additive tail that never reaches zero is an unbounded halo, and
+     "brightness never bleeds into a pixel the beam did not illuminate" is a hard
+     requirement here. Swelling sigma (the opt-in halo) widens the spot; it never
+     gives it a tail. */
   float g = exp(-(d * d) / (2.0 * vSigma * vSigma)) - 0.011109;   // exp(-4.5)
   outColour = vec4(vEnergy * uExposure * max(g, 0.0), 0.0, 0.0, 1.0);
 }`;
@@ -191,7 +204,7 @@ export function probeGL() {
     r.setSigma(1.5);
     r.setTau(1);
     const seg = r.segData;
-    seg[0] = 10; seg[1] = 32; seg[2] = 54; seg[3] = 32; seg[4] = 1;
+    seg[0] = 10; seg[1] = 32; seg[2] = 54; seg[3] = 32; seg[4] = 1; seg[5] = 1;
     r.decay(1 / 60);
     r.deposit(1);
     r.present();
@@ -254,7 +267,7 @@ export function createGL(canvas) {
 
   const MAX_SEG = 32768;
   const segBuf = gl.createBuffer();
-  const segData = new Float32Array(MAX_SEG * 5);   // x0,y0,x1,y1,energy
+  const segData = new Float32Array(MAX_SEG * 6);   // x0,y0,x1,y1,energy,swell
   gl.bindBuffer(gl.ARRAY_BUFFER, segBuf);
   gl.bufferData(gl.ARRAY_BUFFER, segData.byteLength, gl.DYNAMIC_DRAW);
 
@@ -387,20 +400,22 @@ export function createGL(canvas) {
     const h = target.h; target.h = scratch.h; scratch.h = h;
   }
 
-  /** Add this frame's beam energy. `n` segments of 5 floats: x0,y0,x1,y1,energy. */
+  /** Add this frame's beam energy. `n` segments of 6 floats:
+   *  x0,y0,x1,y1,energy,swell. */
   function deposit(n) {
     if (!n) return;
     state.segments = n;
     gl.bindBuffer(gl.ARRAY_BUFFER, segBuf);
-    gl.bufferSubData(gl.ARRAY_BUFFER, 0, segData, 0, n * 5);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, segData, 0, n * 6);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
     gl.viewport(0, 0, target.w, target.h);
     gl.useProgram(progBeam.p);
-    const stride = 5 * 4;
+    const stride = 6 * 4;
     const p0 = gl.getAttribLocation(progBeam.p, 'aP0');
     const p1 = gl.getAttribLocation(progBeam.p, 'aP1');
     const en = gl.getAttribLocation(progBeam.p, 'aEnergy');
+    const sw = gl.getAttribLocation(progBeam.p, 'aSwell');
     gl.enableVertexAttribArray(p0);
     gl.vertexAttribPointer(p0, 2, gl.FLOAT, false, stride, 0);
     gl.vertexAttribDivisor(p0, 1);
@@ -410,6 +425,9 @@ export function createGL(canvas) {
     gl.enableVertexAttribArray(en);
     gl.vertexAttribPointer(en, 1, gl.FLOAT, false, stride, 16);
     gl.vertexAttribDivisor(en, 1);
+    gl.enableVertexAttribArray(sw);
+    gl.vertexAttribPointer(sw, 1, gl.FLOAT, false, stride, 20);
+    gl.vertexAttribDivisor(sw, 1);
 
     bindQuad(progBeam, gl.getAttribLocation(progBeam.p, 'aCorner'));
     gl.uniform2f(progBeam.uniforms.uViewport, target.w, target.h);
