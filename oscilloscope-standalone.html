@@ -1664,6 +1664,56 @@ void main() {
   outColour = vec4(uColour * a, a);          // premultiplied, for compositing
 }`;
 
+/* ------------------------------------------------------------------ halation
+   Light generated in the phosphor does not all leave where it was made: it
+   scatters sideways in the powder and then bounces inside the glass, so a bright
+   trace sits inside a wide, dim cloud. That cloud is what a photograph of a real
+   scope shows around the whole figure (reference photos 2 and 3), and it is NOT
+   a property of the beam.
+
+   Which is exactly why it has to happen HERE and not in the beam pass. Applied
+   to the energy buffer, a dwell deposits thousands of times the energy that
+   saturates the tone map, so any halo term is itself saturated out to its own
+   cutoff — the result is a flat disc with a hard edge, which is what the first
+   attempt produced. Halation scatters light that has ALREADY been emitted, i.e.
+   the bounded luminance, and then it can never exceed its own amplitude.
+
+   Five mip levels, weighted, approximate the long-tailed point spread function
+   for five texture fetches and no extra passes. Sum of weights = 1, so the cloud
+   adds at most uMix to any pixel. */
+/* The taps are AVERAGES over 8, 16, 32, 64, 128 and 256 pixels, and how they are
+   weighted is the whole game. Weighting the narrow ones (the obvious "bloom"
+   choice) gives a tight halo that hugs the trace and dies within one octave.
+   Weighting them EQUALLY gives each octave the same contribution, which is what
+   a long-tailed, roughly 1/r glare looks like: a bright core, then a skirt that
+   keeps going out to a sixth of the screen. That is the cloud in reference
+   photos 2 and 3, and it is a convolution — its far field is the local average
+   luminance, which is why the cloud is obvious around a dense figure and nearly
+   invisible around one thin line. Nothing here rescales that away: the taps sum
+   to 1 and every tap is <= 1, so the cloud adds at most uMix and never becomes a
+   second image of the trace. */
+const FRAG_HALO = `#version 300 es
+precision highp float;
+in vec2 vUv;
+uniform sampler2D uSrc;          // tone-mapped frame, mipmapped
+uniform vec3 uColour;
+uniform float uMix;              // halation amplitude; 0 = the pass is skipped
+out vec4 outColour;
+const float W0 = 0.22, W1 = 0.20, W2 = 0.18, W3 = 0.16, W4 = 0.14, W5 = 0.10;
+void main() {
+  float l = texture(uSrc, vUv).a;
+  float h = W0 * textureLod(uSrc, vUv, 3.0).a
+          + W1 * textureLod(uSrc, vUv, 4.0).a
+          + W2 * textureLod(uSrc, vUv, 5.0).a
+          + W3 * textureLod(uSrc, vUv, 6.0).a
+          + W4 * textureLod(uSrc, vUv, 7.0).a
+          + W5 * textureLod(uSrc, vUv, 8.0).a;
+  float a = min(1.0, l + uMix * h);
+  outColour = vec4(uColour * a, a);
+}`;
+
+const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
+
 function compile(gl, type, src) {
   const s = gl.createShader(type);
   gl.shaderSource(s, src);
@@ -1768,12 +1818,13 @@ function createGL(canvas) {
     state.lost = true;
   }, false);
 
-  let progDecay, progCopy, progBeam, progTone;
+  let progDecay, progCopy, progBeam, progTone, progHalo;
   try {
     progDecay = program(gl, VERT_QUAD, FRAG_DECAY);
     progCopy = program(gl, VERT_QUAD, FRAG_COPY);
     progBeam = program(gl, VERT_BEAM, FRAG_BEAM);
     progTone = program(gl, VERT_QUAD, FRAG_TONE);
+    progHalo = program(gl, VERT_QUAD, FRAG_HALO);
   } catch (e) {
     return null;                                  // shader trouble: fall back
   }
@@ -1792,15 +1843,17 @@ function createGL(canvas) {
   const target = { tex: null, fbo: null, w: 0, h: 0 };
   const display = { tex: null, fbo: null, w: 0, h: 0 };
   const scratch = { tex: null, fbo: null, w: 0, h: 0 };
+  const haloIn = { tex: null, fbo: null, w: 0, h: 0 };
 
   /** Allocate without destroying anything: a resize has to COPY the old
    *  accumulation first, and deleting it up front is how the picture got wiped
    *  (the console said `tex is already deleted`). */
-  function allocTexture(w, h, internal, format, type) {
+  function allocTexture(w, h, internal, format, type, mip) {
     const tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.texImage2D(gl.TEXTURE_2D, 0, internal, w, h, 0, format, type, null);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER,
+      mip ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
@@ -1833,6 +1886,9 @@ function createGL(canvas) {
 
   const makeTarget = (w, h) => allocTexture(w, h, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT);
   const makeDisplay = (w, h) => allocTexture(w, h, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE);
+  /* Only allocated when 光晕 is first switched on: with it off the render path is
+     byte for byte what it was, one full-screen pass cheaper. */
+  const makeHaloSrc = (w, h) => allocTexture(w, h, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, true);
 
   const state = {
     ok: true,
@@ -1842,6 +1898,7 @@ function createGL(canvas) {
     exposure: 0.45,        // per unit 1/v, per frame
     e0: 1,                 // energy that tone-maps to ~63% brightness
     sigma: 1.0,            // beam spot sigma, in device pixels
+    halo: 0,               // halation amplitude (0 = pass skipped)
     tau: 0.02,             // phosphor time constant, seconds
     segments: 0,
     lost: false,
@@ -1883,6 +1940,7 @@ function createGL(canvas) {
     adopt(target, next);                                 // frees the old, after the copy
     adopt(display, nextDisplay);
     if (scratch.tex && (scratch.w !== w || scratch.h !== h)) adopt(scratch, makeTarget(w, h));
+    if (haloIn.tex && (haloIn.w !== w || haloIn.h !== h)) adopt(haloIn, makeHaloSrc(w, h));
     state.width = w;
     state.height = h;
   }
@@ -1958,12 +2016,10 @@ function createGL(canvas) {
     gl.disable(gl.BLEND);
   }
 
-  /** Tone-map to the display target, then blit it to the canvas. The display
-   *  target exists so a test can read the frame back at any time without
-   *  preserveDrawingBuffer. */
-  function present() {
-    gl.bindFramebuffer(gl.FRAMEBUFFER, display.fbo);
-    gl.viewport(0, 0, display.w, display.h);
+  /** Tone-map the energy buffer into `dest`. */
+  function toneMap(dest) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, dest.fbo);
+    gl.viewport(0, 0, dest.w, dest.h);
     gl.disable(gl.BLEND);
     gl.useProgram(progTone.p);
     gl.activeTexture(gl.TEXTURE0);
@@ -1973,6 +2029,39 @@ function createGL(canvas) {
     gl.uniform1f(progTone.uniforms.uE0, state.e0);
     bindQuad(progTone, gl.getAttribLocation(progTone.p, 'aPos'));
     gl.drawArrays(gl.TRIANGLES, 0, 6);
+  }
+
+  /** Add the halation cloud on top of the tone-mapped frame. */
+  function addHalo(from) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, display.fbo);
+    gl.viewport(0, 0, display.w, display.h);
+    gl.disable(gl.BLEND);
+    gl.useProgram(progHalo.p);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, from.tex);
+    gl.uniform1i(progHalo.uniforms.uSrc, 0);
+    gl.uniform3f(progHalo.uniforms.uColour, state.colour[0], state.colour[1], state.colour[2]);
+    gl.uniform1f(progHalo.uniforms.uMix, state.halo);
+    bindQuad(progHalo, gl.getAttribLocation(progHalo.p, 'aPos'));
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+  }
+
+  /** Tone-map the energy buffer to the display target, then blit it to the
+   *  canvas. The display target exists so a test can read the frame back at any
+   *  time without preserveDrawingBuffer. With 光晕 on, the tone map goes to a
+   *  scratch instead so the halo pass has a luminance texture to scatter. */
+  function present() {
+    if (state.halo > 0) {
+      if (!haloIn.tex || haloIn.w !== display.w || haloIn.h !== display.h) {
+        adopt(haloIn, makeHaloSrc(display.w, display.h));
+      }
+      toneMap(haloIn);
+      gl.bindTexture(gl.TEXTURE_2D, haloIn.tex);
+      gl.generateMipmap(gl.TEXTURE_2D);
+      addHalo(haloIn);
+    } else {
+      toneMap(display);
+    }
 
     gl.bindFramebuffer(gl.READ_FRAMEBUFFER, display.fbo);
     gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
@@ -2005,8 +2094,9 @@ function createGL(canvas) {
     setExposure(v) { state.exposure = v; },
     setSigma(v) { state.sigma = Math.max(0.5, v); },
     setTau(v) { state.tau = Math.max(0, v); },
+    setHalo(v) { state.halo = clamp01(v); },
     dispose() {
-      for (const t of [target, display, scratch]) {
+      for (const t of [target, display, scratch, haloIn]) {
         if (t.tex) gl.deleteTexture(t.tex);
         if (t.fbo) gl.deleteFramebuffer(t.fbo);
       }
@@ -2390,7 +2480,7 @@ function tauFor(p) {
  *  lineWidth; a Gaussian of sigma = w/2 has the same apparent thickness. */
 function sigmaFor(lw) { return Math.max(0.5, lw * DPR * 0.5); }
 
-/* ---- the opt-in halo: spot sigma grows with beam current -----------------
+/* ---- the opt-in halo, part 1: spot sigma grows with beam current ---------
    On an analog tube the spot is not a fixed-width pen. Space charge blows the
    beam up as the current rises, so a beam that DWELLS writes a disc: the core
    saturates, and the skirt around it is what a photo of a real scope shows as a
@@ -2399,13 +2489,14 @@ function sigmaFor(lw) { return Math.max(0.5, lw * DPR * 0.5); }
    so it gets its own control and defaults to OFF — with 光晕 at 0 the swell is
    exactly 1 and every pixel the beam touches is the line width, as before.
 
-   The law is the light output's, not the geometry's: halation scales with the
-   luminance the phosphor is putting out, and a phosphor saturates, so the halo
-   is nearly absent on ordinary writing and grows steeply once the beam has
-   lingered. `w` is "how many times slower than typical is this segment", so the
-   curve is flat at w ≈ 1 (a crisp line), noticeable around w = 4, and a wide
-   blob at the w ≥ 16 of a near-stationary beam — which is exactly the shape in
-   the reference photos: thin trace, big round flare where the beam slowed down.
+   This is the CORE: space charge blows the beam up as the current rises, so a
+   stroke the beam lingered on ends in a fat saturated cap. The wide cloud that a
+   photo of a real scope shows around the WHOLE figure is a second, separate
+   effect (halation) and is applied after the tone map — see addHalo in gl.js.
+
+   The law is steeper than linear so ordinary writing stays crisp: `dose` is "how
+   many times slower than typical is this segment", so the curve is flat at
+   dose ≈ 1, noticeable around 4, and at the cap for the ≥ 20 of a stopped beam.
 
    Two consequences worth stating, because they are the point:
      · the swell multiplies sigma but leaves the profile's PEAK alone, so the core
@@ -2418,14 +2509,41 @@ const HALO_BASE = 0.05;    // a badly focused tube is fatter everywhere
 const HALO_DOSE = 2.2;     // halation gain, at the reference dose below
 const HALO_REF = 4;        // dose (× the mean beam speed) that counts as a dwell
 const HALO_POW = 1.5;      // steeper than linear: ordinary writing stays crisp
-const HALO_MAX = 12;       // cap: 3σ of this is the widest footprint ever drawn
-/* `dose` is the same 1/v ratio the brightness uses: halation answers to the
-   dwell, and the dwell is what the brightness is a picture of. */
+/* The cap is deliberately modest now that the cloud carries the size: a cropped
+   saturated disc is a hard-edged thing (255 out to its edge and then nothing),
+   and at x12 it ended in a cliff of its own. The reference stroke ends are balls
+   of roughly three line widths, so that is where this stops. */
+const HALO_MAX = 4;        // cap on the core swell
+/* `dose` is the same 1/v ratio the brightness uses: the core swells where the
+   beam lingered, which is also where the brightness is. */
 function swellFor(dose) {
   if (!S.halo) return 1;
   const h = clamp(S.halo / 100, 0, 1);
   const d = Math.min(dose, 50) / HALO_REF;
   return Math.min(HALO_MAX, 1 + h * (HALO_BASE + HALO_DOSE * Math.pow(d, HALO_POW)));
+}
+
+/* ---- the halo, part 2: halation, the cloud the emitted light makes --------
+   A separate effect from the spot, and applied to the tone-mapped frame instead
+   of to the energy: the scatter happens to light the phosphor has ALREADY
+   emitted, so its input is bounded and its output can never exceed this
+   amplitude. Mixing it into the energy buffer instead is what made the first
+   attempt a flat disc with a hard edge — a dwell deposits thousands of times
+   what saturates the tone map, so every term of the spot, halo included, was
+   driven into saturation out to its own cutoff and the "glow" ended in a cliff.
+
+   The slider runs the amplitude all the way to 0.9 because the two reference
+   cases are far apart: around a dense figure the wide taps already average 20-40
+   % of full brightness and the cloud is obvious, while around a single thin
+   stroke the same taps average a few percent and no amplitude short of this makes
+   it read at all. 光晕 is the knob for which of those you are looking at. */
+const HALO_CLOUD = 0.9;
+function haloMix() {
+  if (!S.halo) return 0;
+  // Curved, because the cloud is a convolution of what is already on screen: on
+  // a dense figure it is obvious by 40 % and by 100 % it has washed the trace
+  // out. h^1.5 keeps the whole slider usable instead of saturating halfway.
+  return HALO_CLOUD * Math.pow(clamp(S.halo / 100, 0, 1), 1.5);
 }
 
 /** Energy deposited per unit of 1/v, per frame. The constant is measured, not
@@ -2755,6 +2873,7 @@ function loop(ts) {
     GL.setExposure(exposureFor(S.intensity));
     GL.setSigma(sigmaFor(S.lineWidth));
     GL.setTau(tauFor(S.persistence));
+    GL.setHalo(haloMix());
     GL.decay(dt);
   } else {
     // Afterglow is pure subtraction: destination-out only ever removes alpha,

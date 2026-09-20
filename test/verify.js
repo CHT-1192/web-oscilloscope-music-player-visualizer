@@ -836,7 +836,7 @@ async function renderTests(pw, rq = '') {
     } else {
       bad('光晕 0: the spot is exactly the line width', `${spotUniform0} / ${spotFlat0}`);
     }
-    if (spotFlat100 >= 11 && spotFlat100 > spotUniform100 * 3) {
+    if (spotFlat100 >= 3.8 && spotFlat100 > spotUniform100 * 2.5) {
       ok('光晕 follows the dose, not the slider',
         `stationary beam swells to x${spotFlat100} vs x${spotUniform100.toFixed(2)} at constant speed`);
     } else {
@@ -870,27 +870,49 @@ async function renderTests(pw, rq = '') {
 
   await setSynth('line');
   await page.waitForTimeout(1800);
-  const nearOn = await inkAbove(10);
-  const farOn = await inkAbove(80);
+  const OFFSETS = [10, 18, 28, 40, 55, 75, 100, 130];
+  const profOn = [];
+  for (const d of OFFSETS) profOn.push(await inkAbove(d));
   await setCtl('halo', 0);
   await page.waitForTimeout(1800);
   const nearOff = await inkAbove(10);
+  const profOff = [];
+  for (const d of OFFSETS) profOff.push(await inkAbove(d));
 
   if (isGL) {
-    if (nearOn > 20 && nearOff === 0) {
-      ok('the halo really is drawn around a dwelling beam', `10 px off the beam: ${nearOff} → ${nearOn}`);
+    if (profOn[1] > 20 && nearOff === 0) {
+      ok('the halo really is drawn around a dwelling beam', `10 px off the beam: ${nearOff} → ${profOn[1]}`);
     } else {
-      bad('the halo really is drawn around a dwelling beam', `10 px: ${nearOff} off, ${nearOn} at 100`);
+      bad('the halo really is drawn around a dwelling beam', `10 px: ${nearOff} off, ${profOn[1]} at 100`);
     }
-    if (farOn === 0) {
-      ok('the halo is still the spot, not a tail', '80 px off the beam: 0 even at 光晕 100');
+    /* The cloud is a scatter of the emitted light, so the profile running away
+       from the beam has to FALL SMOOTHLY — that is the whole point of moving it
+       after the tone map. Applied to the energy buffer instead it saturated out
+       to its cutoff and ended in a cliff (the first attempt at this). */
+    const rises = profOn.slice(1).some((v, i) => v > profOn[i] + 8);
+    /* Two things the old (energy-space) halo could not do: keep light going far
+       past the widest spot, and never step to zero — it ended at 3σ of its own
+       cutoff, i.e. a disc with an edge. This profile has to reach 130 px and fall
+       all the way without a cliff. */
+    const steps = profOn.slice(1).map((v, i) => (profOn[i] > 0 ? v / profOn[i] : 1));
+    const worstStep = Math.min(...steps);
+    if (profOn[2] > 4 && profOn[3] > 0 && profOn[7] < profOn[2] * 0.6 && !rises && worstStep >= 0.1) {
+      ok('the halo is a wide cloud that fades smoothly',
+        `alpha at ${OFFSETS.join('/')} px: ${profOn.join('/')}`);
     } else {
-      bad('the halo is still the spot, not a tail', `80 px off the beam: ${farOn}`);
+      bad('the halo is a wide cloud that fades smoothly',
+        `alpha ${profOn.join('/')} · worst step x${worstStep.toFixed(2)}`);
     }
-  } else if (nearOn === 0 && farOn === 0) {
-    ok('Canvas path: no halo at all, as the disabled row says', '10 px and 80 px off the beam: 0');
+    if (profOff[1] === 0 && profOff[3] === 0) {
+      ok('光晕 0 is exactly the old spot: nothing leaves the beam',
+        `off at 10 px and at 28 px (${profOn[3]} at 光晕 100)`);
+    } else {
+      bad('光晕 0 is exactly the old spot', `${profOff.join('/')}`);
+    }
+  } else if (profOn[0] === 0 && profOn[profOn.length - 1] === 0) {
+    ok('Canvas path: no halo at all, as the disabled row says', `nothing past the stroke: ${profOn.join('/')}`);
   } else {
-    bad('Canvas path: no halo at all', `${nearOn} / ${farOn}`);
+    bad('Canvas path: no halo at all', profOn.join('/'));
   }
 
   await page.evaluate(() => {

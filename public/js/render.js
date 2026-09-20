@@ -367,7 +367,7 @@ function tauFor(p) {
  *  lineWidth; a Gaussian of sigma = w/2 has the same apparent thickness. */
 function sigmaFor(lw) { return Math.max(0.5, lw * DPR * 0.5); }
 
-/* ---- the opt-in halo: spot sigma grows with beam current -----------------
+/* ---- the opt-in halo, part 1: spot sigma grows with beam current ---------
    On an analog tube the spot is not a fixed-width pen. Space charge blows the
    beam up as the current rises, so a beam that DWELLS writes a disc: the core
    saturates, and the skirt around it is what a photo of a real scope shows as a
@@ -376,13 +376,14 @@ function sigmaFor(lw) { return Math.max(0.5, lw * DPR * 0.5); }
    so it gets its own control and defaults to OFF — with 光晕 at 0 the swell is
    exactly 1 and every pixel the beam touches is the line width, as before.
 
-   The law is the light output's, not the geometry's: halation scales with the
-   luminance the phosphor is putting out, and a phosphor saturates, so the halo
-   is nearly absent on ordinary writing and grows steeply once the beam has
-   lingered. `w` is "how many times slower than typical is this segment", so the
-   curve is flat at w ≈ 1 (a crisp line), noticeable around w = 4, and a wide
-   blob at the w ≥ 16 of a near-stationary beam — which is exactly the shape in
-   the reference photos: thin trace, big round flare where the beam slowed down.
+   This is the CORE: space charge blows the beam up as the current rises, so a
+   stroke the beam lingered on ends in a fat saturated cap. The wide cloud that a
+   photo of a real scope shows around the WHOLE figure is a second, separate
+   effect (halation) and is applied after the tone map — see addHalo in gl.js.
+
+   The law is steeper than linear so ordinary writing stays crisp: `dose` is "how
+   many times slower than typical is this segment", so the curve is flat at
+   dose ≈ 1, noticeable around 4, and at the cap for the ≥ 20 of a stopped beam.
 
    Two consequences worth stating, because they are the point:
      · the swell multiplies sigma but leaves the profile's PEAK alone, so the core
@@ -395,14 +396,41 @@ const HALO_BASE = 0.05;    // a badly focused tube is fatter everywhere
 const HALO_DOSE = 2.2;     // halation gain, at the reference dose below
 const HALO_REF = 4;        // dose (× the mean beam speed) that counts as a dwell
 const HALO_POW = 1.5;      // steeper than linear: ordinary writing stays crisp
-const HALO_MAX = 12;       // cap: 3σ of this is the widest footprint ever drawn
-/* `dose` is the same 1/v ratio the brightness uses: halation answers to the
-   dwell, and the dwell is what the brightness is a picture of. */
+/* The cap is deliberately modest now that the cloud carries the size: a cropped
+   saturated disc is a hard-edged thing (255 out to its edge and then nothing),
+   and at x12 it ended in a cliff of its own. The reference stroke ends are balls
+   of roughly three line widths, so that is where this stops. */
+const HALO_MAX = 4;        // cap on the core swell
+/* `dose` is the same 1/v ratio the brightness uses: the core swells where the
+   beam lingered, which is also where the brightness is. */
 function swellFor(dose) {
   if (!S.halo) return 1;
   const h = clamp(S.halo / 100, 0, 1);
   const d = Math.min(dose, 50) / HALO_REF;
   return Math.min(HALO_MAX, 1 + h * (HALO_BASE + HALO_DOSE * Math.pow(d, HALO_POW)));
+}
+
+/* ---- the halo, part 2: halation, the cloud the emitted light makes --------
+   A separate effect from the spot, and applied to the tone-mapped frame instead
+   of to the energy: the scatter happens to light the phosphor has ALREADY
+   emitted, so its input is bounded and its output can never exceed this
+   amplitude. Mixing it into the energy buffer instead is what made the first
+   attempt a flat disc with a hard edge — a dwell deposits thousands of times
+   what saturates the tone map, so every term of the spot, halo included, was
+   driven into saturation out to its own cutoff and the "glow" ended in a cliff.
+
+   The slider runs the amplitude all the way to 0.9 because the two reference
+   cases are far apart: around a dense figure the wide taps already average 20-40
+   % of full brightness and the cloud is obvious, while around a single thin
+   stroke the same taps average a few percent and no amplitude short of this makes
+   it read at all. 光晕 is the knob for which of those you are looking at. */
+const HALO_CLOUD = 0.9;
+function haloMix() {
+  if (!S.halo) return 0;
+  // Curved, because the cloud is a convolution of what is already on screen: on
+  // a dense figure it is obvious by 40 % and by 100 % it has washed the trace
+  // out. h^1.5 keeps the whole slider usable instead of saturating halfway.
+  return HALO_CLOUD * Math.pow(clamp(S.halo / 100, 0, 1), 1.5);
 }
 
 /** Energy deposited per unit of 1/v, per frame. The constant is measured, not
@@ -732,6 +760,7 @@ function loop(ts) {
     GL.setExposure(exposureFor(S.intensity));
     GL.setSigma(sigmaFor(S.lineWidth));
     GL.setTau(tauFor(S.persistence));
+    GL.setHalo(haloMix());
     GL.decay(dt);
   } else {
     // Afterglow is pure subtraction: destination-out only ever removes alpha,
