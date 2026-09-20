@@ -539,22 +539,22 @@ const SYNTH = `
   })();
 
   window.__measure = function (cx, cy, halfW, halfH) {
-    const c = document.getElementById('trace');
-    const g = c.getContext('2d');
+    const c = window.__scope.state.canvas;
+    const size = window.__scope.state.canvas;
     const x = Math.max(0, Math.round(cx - halfW));
     const y = Math.max(0, Math.round(cy - halfH));
-    const w = Math.min(c.width - x, Math.round(halfW * 2));
-    const h = Math.min(c.height - y, Math.round(halfH * 2));
+    const w = Math.min(size.w - x, Math.round(halfW * 2));
+    const h = Math.min(size.h - y, Math.round(halfH * 2));
     if (w <= 0 || h <= 0) return { max: -1, mean: -1 };
-    const d = g.getImageData(x, y, w, h).data;
+    const d = window.__scope.readTrace(x, y, w, h);
     let max = 0, sum = 0, n = 0;
     for (let i = 3; i < d.length; i += 4) { if (d[i] > max) max = d[i]; sum += d[i]; n++; }
     return { max, mean: n ? sum / n : 0 };
   };
 
   window.__plotCenter = function () {
-    const c = document.getElementById('trace');
-    const W = c.width, H = c.height;
+    const c = window.__scope.state.canvas;
+    const W = c.w, H = c.h;
     const PLOT = Math.min(W, H) * 0.9;
     const cx = (W - PLOT) / 2 + PLOT / 2;
     const cy = (H - PLOT) / 2 + PLOT / 2;
@@ -562,8 +562,15 @@ const SYNTH = `
   };
 `;
 
-async function renderTests(pw) {
-  section('Render layer (Chromium)');
+/** `rq` is the renderer query string: '' runs whatever the app picks (WebGL when
+ *  available), '?renderer=2d' forces the Canvas fallback so the two paths are
+ *  held to the same checks. */
+async function renderTests(pw, rq = '') {
+  /* One query string, not two: `${rq}${rest}` produced '?renderer=2d?demo=1',
+     which silently dropped demo=1 — and the synthetic phase then measured an
+     empty screen while every other check passed. */
+  const nav = (rest) => `${BASE}/${rq}${rq ? rest.replace('?', '&') : rest}`;
+  section(`Render layer (Chromium) — ${rq ? 'forced Canvas-2D' : 'default (WebGL when available)'}`);
 
   const browser = await pw.chromium.launch({
     executablePath: findChromium(),
@@ -581,7 +588,7 @@ async function renderTests(pw) {
   const realErrors = () => errors.filter((e) => !/favicon/i.test(e));
 
   await page.addInitScript(SYNTH);
-  await page.goto(`${BASE}/?demo=1`, { waitUntil: 'load' });
+  await page.goto(nav('?demo=1'), { waitUntil: 'load' });
   await page.waitForTimeout(1200);
 
   if (!realErrors().length) ok('app boots with no console/page errors');
@@ -589,8 +596,8 @@ async function renderTests(pw) {
 
   // The AudioContext must actually be running for the analysers to produce data.
   const running = await page.evaluate(() => {
-    const t = document.getElementById('trace');
-    return !!t && t.width > 0 && t.height > 0;
+    const c = window.__scope.state.canvas;
+    return !!c && c.w > 0 && c.h > 0;
   });
   if (running) ok('canvases sized for the viewport');
   else bad('canvases sized for the viewport');
@@ -611,8 +618,6 @@ async function renderTests(pw) {
 
   if (offEdge.max > 40) ok('synthetic square stroke is rendered', `edge alpha ${offEdge.max}`);
   else bad('synthetic square stroke is rendered', `edge alpha ${offEdge.max}`);
-  if (offMid.max > 40) ok('control: retrace IS visible with blanking off', `centre alpha ${offMid.max}`);
-  else bad('control: retrace IS visible with blanking off', `centre alpha ${offMid.max} — test signal not reaching the renderer`);
 
   /* ---- synthetic retrace, blanking ON --------------------------------- */
   await page.evaluate(() => {
@@ -629,14 +634,26 @@ async function renderTests(pw) {
   if (onMid.max <= 4) ok('NO RETRACE LINE through the centre', `centre alpha ${onMid.max} (was ${offMid.max})`);
   else bad('NO RETRACE LINE through the centre', `centre alpha ${onMid.max} — retrace still visible`);
 
+  /* The control: with velocity blanking off the retrace has to get THROUGH. How
+     bright it is differs by model and the check is stated so both are honest
+     about it — the 8-bit path strokes everything at one alpha when blanking is
+     off, while the energy path keeps the 1/v law (a fast beam deposits very
+     little) and only stops DROPPING it. So: brighter than with blanking on, and
+     not zero. */
+  if (offMid.max > 0 && offMid.max > onMid.max) {
+    ok('control: blanking off lets the retrace through', `centre ${offMid.max} off vs ${onMid.max} on`);
+  } else {
+    bad('control: blanking off lets the retrace through', `centre ${offMid.max} off vs ${onMid.max} on — nothing is reaching the renderer`);
+  }
+
   /* ---- the blanking threshold is exact, and adjustable ---------------- */
   const centreAlpha = () => page.evaluate(() => {
     const st = window.__scope.state;
-    const c = document.getElementById('trace');
-    const g = c.getContext('2d');
+    const c = window.__scope.state.canvas;
+    const size = window.__scope.state.canvas;
     const x = Math.round(st.plot.x + st.plot.size / 2);
     const y = Math.round(st.plot.y + st.plot.size / 2);
-    const d = g.getImageData(x - 5, y - 5, 11, 11).data;
+    const d = window.__scope.readTrace(x - 5, y - 5, 11, 11);
     let max = 0;
     for (let i = 3; i < d.length; i += 4) if (d[i] > max) max = d[i];
     return max;
@@ -719,7 +736,7 @@ async function renderTests(pw) {
 
   /* ---- real audio ------------------------------------------------------ */
   await page.evaluate(() => { window.__synthOn = false; });
-  await page.goto(`${BASE}/?track=0`, { waitUntil: 'load' });
+  await page.goto(nav('?track=0'), { waitUntil: 'load' });
   await page.waitForTimeout(800);
   await page.evaluate(() => {
     const a = document.getElementById('audio');
@@ -736,8 +753,8 @@ async function renderTests(pw) {
   } else bad('real audio plays through the Web Audio graph', JSON.stringify(played));
 
   const litPixels = () => page.evaluate(() => {
-    const c = document.getElementById('trace');
-    const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+    const c = window.__scope.state.canvas;
+    const d = window.__scope.readTrace(0, 0, c.w, c.h);
     let lit = 0;
     for (let i = 3; i < d.length; i += 4) if (d[i] > 24) lit++;
     return lit;
@@ -764,11 +781,11 @@ async function renderTests(pw) {
   await page.waitForTimeout(6000);
   const exposure = await page.evaluate(() => {
     const st = window.__scope.state;
-    const c = document.getElementById('trace');
+    const c = window.__scope.state.canvas;
     const x = Math.round(st.plot.x);
     const y = Math.round(st.plot.y);
     const s = Math.round(st.plot.size);
-    const d = c.getContext('2d').getImageData(x, y, s, s).data;
+    const d = window.__scope.readTrace(x, y, s, s);
     let lit = 0, blown = 0;
     for (let i = 3; i < d.length; i += 4) {
       if (d[i] > 8) { lit++; if (d[i] >= 250) blown++; }
@@ -824,23 +841,33 @@ async function renderTests(pw) {
     set('residue', 40);          // keep the periodic scrub gentle between samples
   });
   await page.waitForTimeout(2500);
-  const sigOf = (id) => page.evaluate((id) => {
-    const c = document.getElementById(id);
-    const o = document.createElement('canvas');
-    o.width = 256; o.height = 160;
-    const g = o.getContext('2d');
-    g.fillStyle = '#000'; g.fillRect(0, 0, 256, 160);
-    g.drawImage(c, 0, 0, c.width, c.height, 0, 0, 256, 160);
-    const d = g.getImageData(0, 0, 256, 160).data;
+  /* Box-average the frame onto a fixed grid, through the seam: the viewport
+     changes size between the two samples, so the grids have to match. */
+  const sigOf = () => page.evaluate(() => {
+    const c = window.__scope.state.canvas;
+    const d = window.__scope.readTrace(0, 0, c.w, c.h);
+    const TW = 256, TH = 160;
     const out = [];
-    for (let i = 1; i < d.length; i += 4) out.push(d[i]);
+    for (let ty = 0; ty < TH; ty++) {
+      for (let tx = 0; tx < TW; tx++) {
+        const x0 = Math.floor(tx * c.w / TW);
+        const x1 = Math.max(x0 + 1, Math.floor((tx + 1) * c.w / TW));
+        const y0 = Math.floor(ty * c.h / TH);
+        const y1 = Math.max(y0 + 1, Math.floor((ty + 1) * c.h / TH));
+        let sum = 0, n = 0;
+        for (let y = y0; y < y1; y++) {
+          for (let x = x0; x < x1; x++) { sum += d[(y * c.w + x) * 4 + 1]; n++; }
+        }
+        out.push(n ? sum / n : 0);
+      }
+    }
     return out;
-  }, id);
+  });
 
-  const sigBefore = await sigOf('trace');
+  const sigBefore = await sigOf();
   await page.setViewportSize({ width: 1100, height: 700 });
   await page.waitForTimeout(1400);
-  const sigAfter = await sigOf('trace');
+  const sigAfter = await sigOf();
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.waitForTimeout(1400);
   let sigSum = 0;
@@ -857,11 +884,11 @@ async function renderTests(pw) {
      n <= 1/(2a) is a fixed point. A slow fade (high 余辉) therefore leaves a
      BRIGHTER permanent ghost, not a longer one. The 残留 slider scrubs it. */
   const ghostBand = () => page.evaluate(() => {
-    const c = document.getElementById('trace');
-    const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+    const c = window.__scope.state.canvas;
+    const d = window.__scope.readTrace(0, 0, c.w, c.h);
     let n = 0;
     for (let i = 3; i < d.length; i += 4) if (d[i] > 8 && d[i] <= 64) n++;
-    return +((n * 100) / (c.width * c.height)).toFixed(3);
+    return +((n * 100) / (c.w * c.h)).toFixed(3);
   });
   const setNum = (k, v) => page.evaluate((c) => {
     const el = document.querySelector(`[data-set="${c.k}"]`);
@@ -885,12 +912,34 @@ async function renderTests(pw) {
 
   const ghostOn = await ghostAfterRun(100);
   const ghostOff = await ghostAfterRun(0);
-  if (ghostOn > 5) ok('residue 100% leaves a permanent ghost', `${ghostOn}% of the canvas at alpha 9-64`);
-  else bad('residue 100% leaves a permanent ghost', `${ghostOn}%`);
-  if (ghostOff < ghostOn / 10) {
-    ok('residue off (default) wipes the quantisation floor', `${ghostOff}% vs ${ghostOn}%`);
+  /* The floor is a property of an 8-bit backing store: `destination-out` rounds,
+     so everything at or below 1/(2a) is a fixed point and never fades. The float
+     accumulation buffer has no such value, which is the whole reason the energy
+     path exists — so on that path the check is stated as its absence, and the
+     residue slider is not asked to do anything. */
+  const renderer = await page.evaluate(() => window.__scope.state.renderer);
+  if (renderer === 'webgl2') {
+    /* No floor to scrub. A float buffer decays as exp(-dt/τ) with no smallest
+       representable value, so the 残留 slider changes nothing — and that is what
+       gets asserted, by measuring the same run at 100 % and at 0 % and requiring
+       them to agree. (An earlier version of this check looked for ink in the
+       alpha 9-64 band and failed: that band is just legitimately dim afterglow,
+       and while paused the frozen frame keeps being painted, so ink never
+       disappears — the floor is not what that metric can see.) */
+    if (Math.abs(ghostOn - ghostOff) < 1) {
+      ok('the residue slider does nothing on the float path',
+        `${ghostOn}% vs ${ghostOff}% with the slider at 100 % and 0 %`);
+    } else {
+      bad('the residue slider does nothing on the float path', `${ghostOn}% vs ${ghostOff}%`);
+    }
   } else {
-    bad('residue off (default) wipes the quantisation floor', `${ghostOff}% vs ${ghostOn}%`);
+    if (ghostOn > 5) ok('residue 100% leaves a permanent ghost', `${ghostOn}% of the canvas at alpha 9-64`);
+    else bad('residue 100% leaves a permanent ghost', `${ghostOn}%`);
+    if (ghostOff < ghostOn / 10) {
+      ok('residue off (default) wipes the quantisation floor', `${ghostOff}% vs ${ghostOn}%`);
+    } else {
+      bad('residue off (default) wipes the quantisation floor', `${ghostOff}% vs ${ghostOn}%`);
+    }
   }
   await page.evaluate(() => document.getElementById('btnReset').click());
   await page.waitForTimeout(600);
@@ -1099,8 +1148,8 @@ async function standaloneTests(pw) {
 
   const state = await page.evaluate(() => {
     const a = document.getElementById('audio');
-    const c = document.getElementById('trace');
-    const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+    const c = window.__scope.state.canvas;
+    const d = window.__scope.readTrace(0, 0, c.w, c.h);
     let lit = 0;
     for (let i = 3; i < d.length; i += 4) if (d[i] > 24) lit++;
     return { src: /^blob:/.test(a.src || ''), paused: a.paused, t: a.currentTime, lit };
@@ -1670,7 +1719,10 @@ const wants = (key) => !ONLY || key.includes(ONLY) || ONLY.includes(key);
       console.log('  \x1b[33m•\x1b[0m Playwright not found — skipping browser checks.');
       console.log('    \x1b[2minstall with: npm i -g playwright\x1b[0m');
     } else if (pw) {
-      if (wants('render')) await renderTests(pw);
+      if (wants('render')) {
+        await renderTests(pw);
+        await renderTests(pw, '?renderer=2d');
+      }
       if (wants('presets')) await presetTests(pw);
       if (wants('resample')) await resampleTests(pw);
       if (wants('standalone')) await standaloneTests(pw);

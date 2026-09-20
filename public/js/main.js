@@ -48,6 +48,8 @@ const {
 } = audio;
 const {
   layout,
+  readTrace,
+  rendererKind,
   resetWorkStats,
   scaleLabel,
   state,
@@ -88,8 +90,13 @@ const {
    that no resampling is happening). Harmless in normal use. */
 window.__scope = {
   get state() {
-    return Object.assign(render.state(), audio.status());
+    // `renderer` says which trace path is live — 'webgl2' or the 'canvas2d'
+    // fallback — because a test measuring brightness needs to know which model
+    // produced it.
+    return Object.assign(render.state(), audio.status(), { renderer: render.rendererKind() });
   },
+  /* The trace layer as RGBA bytes, whichever renderer is running. */
+  readTrace: (x, y, w, h) => render.readTrace(x, y, w, h),
   readAnalyser() {
     const a = currentAnalysers();
     if (!a) return null;

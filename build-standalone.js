@@ -244,6 +244,16 @@ try {
   process.exit(1);
 }
 
+/* Parse the bundle before shipping it. A syntax error in any module would
+   otherwise only surface in the browser, and only as a blank page. */
+try {
+  // eslint-disable-next-line no-new-func
+  new Function(js);
+} catch (err) {
+  console.error(`  ✗ the inlined bundle does not parse: ${err.message}`);
+  process.exit(1);
+}
+
 if (js.includes('</script')) {
   console.error('  ✗ the bundle contains a literal "</script" — inline build would break.');
   process.exit(1);

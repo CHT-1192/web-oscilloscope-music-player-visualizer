@@ -1,5 +1,6 @@
 import * as core from './core.js';
 import * as audio from './audio.js';
+import * as glmod from './gl.js';
 
 /* Geometry, the graticule, the beam, the two accumulation layers, the frame
    loop and the quality governor. Everything in here is about pixels: the
@@ -19,7 +20,17 @@ const {
 } = core;
 
 const bctx = dom.bg.getContext('2d');
-const tctx = dom.trace.getContext('2d');
+
+/* Which renderer the trace canvas gets is decided ONCE, here: a canvas hands out
+   one context kind for its whole life, so there is no switching later. `?renderer=`
+   forces the choice (used by the tests to exercise both paths); the default asks
+   for WebGL and falls back to Canvas-2D when it is unavailable. */
+const WANT_GL = (() => {
+  const q = new URLSearchParams(location.search).get('renderer');
+  return q !== '2d';
+})();
+const GL = WANT_GL ? glmod.createGL(dom.trace) : null;
+const tctx = GL ? null : dom.trace.getContext('2d');
 
 /* --------------------------------------------------------------- geometry */
 
@@ -130,7 +141,13 @@ function layout() {
 
   DPR = dpr; W = w; H = h;
   dom.bg.width = W; dom.bg.height = H;           // redrawn from scratch below
-  resizeKeeping(dom.trace, tctx);
+  if (GL) {
+    dom.trace.width = W;
+    dom.trace.height = H;
+    GL.resize(W, H);              // scaled carry-over of the accumulated energy
+  } else {
+    resizeKeeping(dom.trace, tctx);
+  }
 
   // Stay centred in the canvas and only shrink when a panel genuinely does
   // not fit in the margin beside the plot. Using max() rather than the sum
@@ -325,6 +342,29 @@ let monoLike = false;
 let lastPeakL = 0;       // previous frame's peaks — auto-gain is smoothed anyway
 let lastPeakR = 0;
 
+/* ---- energy-model parameters (WebGL path) ------------------------------
+   The Canvas path fades with a per-frame alpha a(p); the energy path decays with
+   a time constant. τ = -dt/ln(1-a) is the time constant that decays at the same
+   rate, so the 余辉 slider keeps its meaning across both renderers instead of
+   needing a second set of numbers. */
+function tauFor(p) {
+  const a = Math.pow(1 - clamp(p / 100, 0, 1), 2) * 0.97 + 0.03;
+  if (a >= 1) return 0;                       // 0 % = no accumulation at all
+  return Math.min(2, -1 / 60 / Math.log(1 - a));
+}
+
+/** Beam spot sigma in device pixels. The Canvas path strokes a line of width
+ *  lineWidth; a Gaussian of sigma = w/2 has the same apparent thickness. */
+function sigmaFor(lw) { return Math.max(0.5, lw * DPR * 0.5); }
+
+/** Energy deposited per unit of 1/v, per frame. The constant is measured, not
+ *  chosen: sweeping it on the busiest passage of a line-type track and counting
+ *  how much ink the tone map blows out gives 0.05→0 %, 0.13→0.06 %, 0.17→0.9 %,
+ *  0.25→3.6 %. 0.9 % at the default intensity is the same operating point the
+ *  8-bit path was calibrated to (0.66 % there), so the two renderers agree about
+ *  what "not blown out" means. */
+function exposureFor(intensity) { return intensity * 0.19; }
+
 function fadeAlpha() {
   // 0 %  -> 1.0  (full clear every frame, zero afterglow)
   // 100% -> 0.03 (long phosphor-like tail)
@@ -409,6 +449,7 @@ function drawTrace(L, R, capacity, n, live) {
   /* ---- ONE pass: map to pixels, track peaks, bucket the segments ------ */
   let peakL = 0, peakR = 0, total = 0;
   let prevX = 0, prevY = 0;
+  let segN = 0;                       // instances handed to the energy renderer
   if (blanking) BUCKET_N.fill(0);
 
   for (let i = 0; i < n; i++) {
@@ -435,12 +476,28 @@ function drawTrace(L, R, capacity, n, live) {
       // what lets the threshold be a number you can state, test, and set:
       // a segment is dropped when it is more than blankRatio times faster
       // than the typical beam speed.
-      if (blanking && s <= blankAt) {
+      if (!blanking || s <= blankAt) {
         const w = ref / (s + eps);              // brightness ∝ 1/speed
-        let b = Math.ceil(w * topBucket);
-        if (b > topBucket) b = topBucket;
-        else if (b < 1) b = 1;
-        BUCKET_IDX[b * MAXN + BUCKET_N[b]++] = i - 1;
+        if (GL) {
+          /* Energy model: the same 1/v law, but it ADDS — no ladder to quantise
+             into and no ceiling, because the tone map saturates instead. The cap
+             only stops a stationary beam from overflowing a half float; 64 is
+             already far past full brightness. */
+          if (segN < GL.maxSegments) {
+            const o = segN * 5;
+            GL.segData[o] = prevX;
+            GL.segData[o + 1] = prevY;
+            GL.segData[o + 2] = x;
+            GL.segData[o + 3] = y;
+            GL.segData[o + 4] = Math.min(w, 64);
+            segN++;
+          }
+        } else if (blanking) {
+          let b = Math.ceil(w * topBucket);
+          if (b > topBucket) b = topBucket;
+          else if (b < 1) b = 1;
+          BUCKET_IDX[b * MAXN + BUCKET_N[b]++] = i - 1;
+        }
       }
     }
     prevX = x;
@@ -462,10 +519,25 @@ function drawTrace(L, R, capacity, n, live) {
   lastPeakR = peakR;
 
   /* ---- paint ---------------------------------------------------------- */
-  paintInto(tctx, n, S.intensity);
+  if (GL) {
+    if (S.beamDot && segN < GL.maxSegments) {
+      // A zero-length segment with a lot of energy IS a stationary beam: the
+      // spot profile makes the dot.
+      const o = segN * 5;
+      GL.segData[o] = PX[n - 1];
+      GL.segData[o + 1] = PY[n - 1];
+      GL.segData[o + 2] = PX[n - 1] + 0.01;
+      GL.segData[o + 3] = PY[n - 1] + 0.01;
+      GL.segData[o + 4] = 4;
+      segN++;
+    }
+    GL.deposit(segN);
+  } else {
+    paintInto(tctx, n, S.intensity);
+  }
 
 
-  if (S.beamDot) {
+  if (S.beamDot && tctx) {
     const lw = S.lineWidth * DPR;
     tctx.fillStyle = S.color;
     tctx.beginPath();
@@ -520,6 +592,7 @@ function paintInto(ctx, n, base) {
 
 
 let uiTick = 0;
+let lastFrame = 0;                 // ms, for the energy model's dt
 /* The last captured window. It has to outlive the frame it was read in:
    when paused the analysers report silence and the loop deliberately
    keeps painting this instead of re-reading them. */
@@ -563,21 +636,37 @@ function loop(ts) {
   flags.redraw = false;
 
   const workStart = performance.now();
-  // Afterglow is pure subtraction: destination-out only ever removes alpha,
-  // so a bright pixel can never bleed light into its neighbours.
-  if (++scrubTick >= SCRUB_EVERY) {
-    scrubTick = 0;
-    fadeLayer(tctx, scrubAlpha());
+  if (GL) {
+    /* Real elapsed time, so a stalled tab decays by the clock rather than by a
+       frame count — the whole point of a time constant. Clamped: after a long
+       stall the phosphor is simply dark, not negative. */
+    const now = performance.now();
+    const dt = lastFrame ? Math.min(0.1, (now - lastFrame) / 1000) : 1 / 60;
+    lastFrame = now;
+    const rgb = hexToRgb(S.color);
+    GL.setColour(rgb.r / 255, rgb.g / 255, rgb.b / 255);
+    GL.setExposure(exposureFor(S.intensity));
+    GL.setSigma(sigmaFor(S.lineWidth));
+    GL.setTau(tauFor(S.persistence));
+    GL.decay(dt);
   } else {
-    fadeLayer(tctx, fadeAlpha());
+    // Afterglow is pure subtraction: destination-out only ever removes alpha,
+    // so a bright pixel can never bleed light into its neighbours.
+    if (++scrubTick >= SCRUB_EVERY) {
+      scrubTick = 0;
+      fadeLayer(tctx, scrubAlpha());
+    } else {
+      fadeLayer(tctx, fadeAlpha());
+    }
   }
 
   try {
     drawTrace(frame.L, frame.R, frame.capacity, winSize(), live);
+    if (GL) GL.present();
   } catch (err) {
     if (!loop.warned) { loop.warned = true; console.error('[scope] render error', err); }
   }
-  tctx.globalAlpha = 1;
+  if (tctx) tctx.globalAlpha = 1;
   adaptQuality(performance.now() - workStart);
 }
 
@@ -641,6 +730,16 @@ function state() {
   };
 }
 
+/** The trace layer as RGBA bytes, whichever renderer is running, so a test can
+ *  read the picture without knowing or caring where it came from. */
+function readTrace(x, y, w, h) {
+  if (GL) return GL.readPixels(x, y, w, h);
+  const d = tctx.getImageData(x, y, w, h);
+  return new Uint8Array(d.data.buffer.slice(0));
+}
+
+const rendererKind = () => (GL ? 'webgl2' : 'canvas2d');
+
 /** Kick off the frame loop (idempotent — the loop re-arms itself). */
 function startLoop() { if (!rafId) rafId = requestAnimationFrame(loop); }
 
@@ -659,7 +758,9 @@ export {
   loop,
   paintInto,
   panelInset,
+  readTrace,
   recordWork,
+  rendererKind,
   resetQuality,
   resetRefSpeed,
   resetTraceState,

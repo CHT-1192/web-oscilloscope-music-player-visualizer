@@ -1512,10 +1512,437 @@ __exp.teardownEngine = teardownEngine;
 __exp.updateRateBadge = updateRateBadge;
 });
 
+/* ---- js/gl.js ------------------------------------------------------ */
+__define("js/gl.js", function (__exp, __req) {
+/* ============================================================================
+ *  gl.js — energy-accumulation renderer (WebGL2)
+ *
+ *  A real CRT's brightness is not a per-frame alpha: a phosphor integrates the
+ *  energy the beam deposits and then decays exponentially. This module renders
+ *  that directly, which is the model the Canvas-2D path only approximates:
+ *
+ *      E(x,y) += exposure · Σ_segments  1/v · spot(x,y)      (additive, per pixel)
+ *      E(x,y) *= exp(-dt/τ)                                  (真 decay, once per frame)
+ *      display = colour · (1 - exp(-E/E₀))                   (saturating tone map)
+ *
+ *  Three consequences the 8-bit path could not have:
+ *    · brightness ∝ 1/v holds exactly, because energy adds — no bucket ladder;
+ *    · deposits below 1/255 are not rounded away, so there is no quantisation
+ *      floor and therefore no "residue" to scrub;
+ *    · the tone map saturates smoothly instead of clipping, so overlapping
+ *      passes brighten and then stop, like a phosphor.
+ *
+ *  What it deliberately does NOT do: no blur, no bloom, no widening. The
+ *  additive step happens on the pixel the beam actually hits (spread only by the
+ *  beam's own Gaussian spot, i.e. the line width) and never bleeds brightness
+ *  into the neighbourhood. That is what keeps "no glow" true here even though
+ *  the accumulation is additive.
+ *
+ *  Everything above is GPU-side; the CPU uploads one instance record per
+ *  segment (5 floats) and issues three draw calls per frame.
+ * ========================================================================== */
+
+const VERT_QUAD = `#version 300 es
+in vec2 aPos;
+out vec2 vUv;
+void main() {
+  vUv = aPos * 0.5 + 0.5;
+  gl_Position = vec4(aPos, 0.0, 1.0);
+}`;
+
+const FRAG_DECAY = `#version 300 es
+precision highp float;
+in vec2 vUv;
+uniform sampler2D uAcc;
+uniform float uKeep;
+out vec4 outColour;
+void main() {
+  outColour = vec4(texture(uAcc, vUv).r * uKeep, 0.0, 0.0, 1.0);
+}`;
+
+const FRAG_COPY = `#version 300 es
+precision highp float;
+in vec2 vUv;
+uniform sampler2D uAcc;
+out vec4 outColour;
+void main() {
+  outColour = vec4(texture(uAcc, vUv).r, 0.0, 0.0, 1.0);
+}`;
+
+const VERT_BEAM = `#version 300 es
+in vec2 aCorner;                 // the unit quad, 6 vertices, shared by all instances
+in vec2 aP0;                     // segment start, device pixels
+in vec2 aP1;                     // segment end
+in float aEnergy;                // exposure for this segment (∝ 1/speed, 0 = blanked)
+uniform vec2 uViewport;
+uniform float uHalfWidth;        // Gaussian sigma, in pixels
+uniform float uExposure;         // energy per unit of 1/v, per frame
+out vec2 vPos;                   // pixel position
+out vec2 vA;                     // segment start
+out vec2 vB;                     // segment end
+out float vEnergy;
+out float vSigma;
+
+vec2 toClip(vec2 p) {
+  return vec2(p.x / uViewport.x * 2.0 - 1.0, 1.0 - p.y / uViewport.y * 2.0);
+}
+
+void main() {
+  vec2 seg = aP1 - aP0;
+  float len = max(length(seg), 0.0001);
+  vec2 dir = seg / len;
+  vec2 nrm = vec2(-dir.y, dir.x);
+  float reach = uHalfWidth * 3.0;                     // ~3σ covers the spot
+  vec2 along = dir * (len * 0.5 + reach);
+  vec2 across = nrm * reach;
+  vec2 centre = (aP0 + aP1) * 0.5;
+  vec2 p = centre + along * aCorner.x + across * aCorner.y;
+
+  vPos = p;
+  vA = aP0;
+  vB = aP1;
+  vEnergy = aEnergy;
+  vSigma = uHalfWidth;
+  gl_Position = vec4(toClip(p), 0.0, 1.0);
+}`;
+
+const FRAG_BEAM = `#version 300 es
+precision highp float;
+in vec2 vPos;
+in vec2 vA;
+in vec2 vB;
+in float vEnergy;
+in float vSigma;
+out vec4 outColour;
+
+/* Distance from a point to a segment, and where along it the closest point is:
+   the spot is a Gaussian centred on the beam, so the deposit across the line
+   follows that profile and the ends fade the way a real spot's do. */
+uniform float uExposure;
+
+void main() {
+  vec2 ab = vB - vA;
+  float len2 = max(dot(ab, ab), 0.0001);
+  float t = clamp(dot(vPos - vA, ab) / len2, 0.0, 1.0);
+  vec2 closest = vA + ab * t;
+  float d = length(vPos - closest);
+  /* Gaussian, but with the tail SUBTRACTED so it reaches exactly zero at 3σ —
+     the quad's edge. A phosphor spot does have Gaussian wings, but an additive
+     tail that never reaches zero is a halo, and "brightness never bleeds into a
+     pixel the beam did not illuminate" is a hard requirement here. */
+  float g = exp(-(d * d) / (2.0 * vSigma * vSigma)) - 0.011109;   // exp(-4.5)
+  outColour = vec4(vEnergy * uExposure * max(g, 0.0), 0.0, 0.0, 1.0);
+}`;
+
+const FRAG_TONE = `#version 300 es
+precision highp float;
+in vec2 vUv;
+uniform sampler2D uAcc;
+uniform vec3 uColour;
+uniform float uE0;
+out vec4 outColour;
+void main() {
+  float e = texture(uAcc, vUv).r;
+  // Saturating, not clipping: linear while the phosphor is dim, asymptotic as it
+  // approaches full brightness.
+  float a = 1.0 - exp(-max(e, 0.0) / uE0);
+  outColour = vec4(uColour * a, a);          // premultiplied, for compositing
+}`;
+
+function compile(gl, type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(s);
+    gl.deleteShader(s);
+    throw new Error(`shader: ${log}`);
+  }
+  return s;
+}
+
+function program(gl, vsSrc, fsSrc) {
+  const p = gl.createProgram();
+  const vs = compile(gl, gl.VERTEX_SHADER, vsSrc);
+  const fs = compile(gl, gl.FRAGMENT_SHADER, fsSrc);
+  gl.attachShader(p, vs);
+  gl.attachShader(p, fs);
+  gl.linkProgram(p);
+  gl.deleteShader(vs);
+  gl.deleteShader(fs);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    const log = gl.getProgramInfoLog(p);
+    gl.deleteProgram(p);
+    throw new Error(`link: ${log}`);
+  }
+  const uniforms = {};
+  for (let i = 0; i < gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS); i++) {
+    const info = gl.getActiveUniform(p, i);
+    uniforms[info.name] = gl.getUniformLocation(p, info.name);
+  }
+  return { p, uniforms };
+}
+
+/** Create the renderer, or return null so the caller can stay on Canvas-2D.
+ *  WebGL2 only: WebGL1 would need instancing and float-render extensions, and
+ *  every browser this project targets has had WebGL2 for years. Failing to get a
+ *  float render target is a hard "no" — a 16-bit integer buffer would reintroduce
+ *  exactly the quantisation floor this is here to remove. */
+function createGL(canvas) {
+  let gl = null;
+  try {
+    gl = canvas.getContext('webgl2', {
+      alpha: true,
+      premultipliedAlpha: true,
+      antialias: false,
+      depth: false,
+      stencil: false,
+      preserveDrawingBuffer: false,
+      powerPreference: 'high-performance',
+    });
+  } catch (e) { /* no WebGL2 at all */ }
+  if (!gl) return null;
+  if (!gl.getExtension('EXT_color_buffer_float')) return null;
+
+  let progDecay, progCopy, progBeam, progTone;
+  try {
+    progDecay = program(gl, VERT_QUAD, FRAG_DECAY);
+    progCopy = program(gl, VERT_QUAD, FRAG_COPY);
+    progBeam = program(gl, VERT_BEAM, FRAG_BEAM);
+    progTone = program(gl, VERT_QUAD, FRAG_TONE);
+  } catch (e) {
+    return null;                                  // shader trouble: fall back
+  }
+
+  const quad = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+  gl.bufferData(gl.ARRAY_BUFFER,
+    new Float32Array([-1, -1, 1, -1, 1, 1, -1, -1, 1, 1, -1, 1]), gl.STATIC_DRAW);
+
+  const MAX_SEG = 32768;
+  const segBuf = gl.createBuffer();
+  const segData = new Float32Array(MAX_SEG * 5);   // x0,y0,x1,y1,energy
+  gl.bindBuffer(gl.ARRAY_BUFFER, segBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, segData.byteLength, gl.DYNAMIC_DRAW);
+
+  const target = { tex: null, fbo: null, w: 0, h: 0 };
+  const display = { tex: null, fbo: null, w: 0, h: 0 };
+  const scratch = { tex: null, fbo: null, w: 0, h: 0 };
+
+  function makeTarget(t, w, h) {
+    if (t.tex) gl.deleteTexture(t.tex);
+    if (t.fbo) gl.deleteFramebuffer(t.fbo);
+    t.tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t.tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    t.fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, t.fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t.tex, 0);
+    t.w = w;
+    t.h = h;
+  }
+
+  function makeDisplay(w, h) {
+    if (display.tex) gl.deleteTexture(display.tex);
+    if (display.fbo) gl.deleteFramebuffer(display.fbo);
+    display.tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, display.tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    display.fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, display.fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, display.tex, 0);
+    display.w = w;
+    display.h = h;
+  }
+
+  const state = {
+    ok: true,
+    width: 0,
+    height: 0,
+    colour: [0.24, 1.0, 0.61],
+    exposure: 0.45,        // per unit 1/v, per frame
+    e0: 1,                 // energy that tone-maps to ~63% brightness
+    sigma: 1.0,            // beam spot sigma, in device pixels
+    tau: 0.02,             // phosphor time constant, seconds
+    segments: 0,
+    lost: false,
+    /** Frame-time bookkeeping, so a stalled tab decays by real time rather than
+     *  by "one step". */
+    last: 0,
+    frames: 0,
+  };
+
+  function bindQuad(prog, loc) {
+    gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  }
+
+  /** Copy the previous accumulation into a fresh target, scaled — a resize must
+   *  not eat the picture (the Canvas path had to do the same by hand). */
+  function resize(w, h) {
+    if (w < 1 || h < 1) return;
+    if (target.w === w && target.h === h) return;
+    const old = target.tex ? { tex: target.tex, fbo: target.fbo, w: target.w, h: target.h } : null;
+    makeTarget(target, w, h);
+    makeDisplay(w, h);
+    if (old) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
+      gl.viewport(0, 0, w, h);
+      gl.useProgram(progCopy.p);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, old.tex);
+      gl.uniform1i(progCopy.uniforms.uAcc, 0);
+      bindQuad(progCopy, gl.getAttribLocation(progCopy.p, 'aPos'));
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      gl.deleteTexture(old.tex);
+      gl.deleteFramebuffer(old.fbo);
+    } else {
+      clear();
+    }
+    state.width = w;
+    state.height = h;
+  }
+
+  function clear() {
+    if (!target.fbo) return;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
+    gl.viewport(0, 0, target.w, target.h);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+  }
+
+  /** One frame's worth of phosphor decay, by real elapsed time. */
+  function decay(dt) {
+    if (!scratch.tex || scratch.w !== target.w || scratch.h !== target.h) {
+      makeTarget(scratch, target.w, target.h);
+    }
+    const keep = state.tau > 0 ? Math.exp(-dt / state.tau) : 0;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, scratch.fbo);
+    gl.viewport(0, 0, target.w, target.h);
+    gl.disable(gl.BLEND);
+    gl.useProgram(progDecay.p);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, target.tex);
+    gl.uniform1i(progDecay.uniforms.uAcc, 0);
+    gl.uniform1f(progDecay.uniforms.uKeep, keep);
+    bindQuad(progDecay, gl.getAttribLocation(progDecay.p, 'aPos'));
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    const t = target.tex; target.tex = scratch.tex; scratch.tex = t;
+    const f = target.fbo; target.fbo = scratch.fbo; scratch.fbo = f;
+    const w = target.w; target.w = scratch.w; scratch.w = w;
+    const h = target.h; target.h = scratch.h; scratch.h = h;
+  }
+
+  /** Add this frame's beam energy. `n` segments of 5 floats: x0,y0,x1,y1,energy. */
+  function deposit(n) {
+    if (!n) return;
+    state.segments = n;
+    gl.bindBuffer(gl.ARRAY_BUFFER, segBuf);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, segData, 0, n * 5);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
+    gl.viewport(0, 0, target.w, target.h);
+    gl.useProgram(progBeam.p);
+    const stride = 5 * 4;
+    const p0 = gl.getAttribLocation(progBeam.p, 'aP0');
+    const p1 = gl.getAttribLocation(progBeam.p, 'aP1');
+    const en = gl.getAttribLocation(progBeam.p, 'aEnergy');
+    gl.enableVertexAttribArray(p0);
+    gl.vertexAttribPointer(p0, 2, gl.FLOAT, false, stride, 0);
+    gl.vertexAttribDivisor(p0, 1);
+    gl.enableVertexAttribArray(p1);
+    gl.vertexAttribPointer(p1, 2, gl.FLOAT, false, stride, 8);
+    gl.vertexAttribDivisor(p1, 1);
+    gl.enableVertexAttribArray(en);
+    gl.vertexAttribPointer(en, 1, gl.FLOAT, false, stride, 16);
+    gl.vertexAttribDivisor(en, 1);
+
+    bindQuad(progBeam, gl.getAttribLocation(progBeam.p, 'aCorner'));
+    gl.uniform2f(progBeam.uniforms.uViewport, target.w, target.h);
+    gl.uniform1f(progBeam.uniforms.uHalfWidth, state.sigma);
+    gl.uniform1f(progBeam.uniforms.uExposure, state.exposure);
+
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE);        // energy ADDS — this is the model
+    gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, n);
+    gl.disable(gl.BLEND);
+  }
+
+  /** Tone-map to the display target, then blit it to the canvas. The display
+   *  target exists so a test can read the frame back at any time without
+   *  preserveDrawingBuffer. */
+  function present() {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, display.fbo);
+    gl.viewport(0, 0, display.w, display.h);
+    gl.disable(gl.BLEND);
+    gl.useProgram(progTone.p);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, target.tex);
+    gl.uniform1i(progTone.uniforms.uAcc, 0);
+    gl.uniform3f(progTone.uniforms.uColour, state.colour[0], state.colour[1], state.colour[2]);
+    gl.uniform1f(progTone.uniforms.uE0, state.e0);
+    bindQuad(progTone, gl.getAttribLocation(progTone.p, 'aPos'));
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, display.fbo);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+    gl.blitFramebuffer(0, 0, display.w, display.h, 0, 0, display.w, display.h,
+      gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    state.frames++;
+  }
+
+  /** The frame as RGBA bytes — the same shape a 2D canvas would give, so the
+   *  caller does not have to care which renderer is running. */
+  function readPixels(x, y, w, h, out) {
+    const buf = out || new Uint8Array(w * h * 4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, display.fbo);
+    gl.readPixels(x, display.h - y - h, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    return buf;
+  }
+
+  return {
+    state,
+    resize,
+    clear,
+    decay,
+    deposit,
+    present,
+    readPixels,
+    /** Segment scratch, exposed so the caller fills it without a copy. */
+    segData,
+    maxSegments: MAX_SEG,
+    setColour(r, g, b) { state.colour = [r, g, b]; },
+    setExposure(v) { state.exposure = v; },
+    setSigma(v) { state.sigma = Math.max(0.5, v); },
+    setTau(v) { state.tau = Math.max(0, v); },
+    dispose() {
+      for (const t of [target, display, scratch]) {
+        if (t.tex) gl.deleteTexture(t.tex);
+        if (t.fbo) gl.deleteFramebuffer(t.fbo);
+      }
+      gl.getExtension('WEBGL_lose_context')?.loseContext();
+    },
+  };
+}
+
+__exp.createGL = createGL;
+});
+
 /* ---- js/render.js -------------------------------------------------- */
 __define("js/render.js", function (__exp, __req) {
 const core = __req("js/core.js");
 const audio = __req("js/audio.js");
+const glmod = __req("js/gl.js");
 
 /* Geometry, the graticule, the beam, the two accumulation layers, the frame
    loop and the quality governor. Everything in here is about pixels: the
@@ -1535,7 +1962,17 @@ const {
 } = core;
 
 const bctx = dom.bg.getContext('2d');
-const tctx = dom.trace.getContext('2d');
+
+/* Which renderer the trace canvas gets is decided ONCE, here: a canvas hands out
+   one context kind for its whole life, so there is no switching later. `?renderer=`
+   forces the choice (used by the tests to exercise both paths); the default asks
+   for WebGL and falls back to Canvas-2D when it is unavailable. */
+const WANT_GL = (() => {
+  const q = new URLSearchParams(location.search).get('renderer');
+  return q !== '2d';
+})();
+const GL = WANT_GL ? glmod.createGL(dom.trace) : null;
+const tctx = GL ? null : dom.trace.getContext('2d');
 
 /* --------------------------------------------------------------- geometry */
 
@@ -1646,7 +2083,13 @@ function layout() {
 
   DPR = dpr; W = w; H = h;
   dom.bg.width = W; dom.bg.height = H;           // redrawn from scratch below
-  resizeKeeping(dom.trace, tctx);
+  if (GL) {
+    dom.trace.width = W;
+    dom.trace.height = H;
+    GL.resize(W, H);              // scaled carry-over of the accumulated energy
+  } else {
+    resizeKeeping(dom.trace, tctx);
+  }
 
   // Stay centred in the canvas and only shrink when a panel genuinely does
   // not fit in the margin beside the plot. Using max() rather than the sum
@@ -1841,6 +2284,29 @@ let monoLike = false;
 let lastPeakL = 0;       // previous frame's peaks — auto-gain is smoothed anyway
 let lastPeakR = 0;
 
+/* ---- energy-model parameters (WebGL path) ------------------------------
+   The Canvas path fades with a per-frame alpha a(p); the energy path decays with
+   a time constant. τ = -dt/ln(1-a) is the time constant that decays at the same
+   rate, so the 余辉 slider keeps its meaning across both renderers instead of
+   needing a second set of numbers. */
+function tauFor(p) {
+  const a = Math.pow(1 - clamp(p / 100, 0, 1), 2) * 0.97 + 0.03;
+  if (a >= 1) return 0;                       // 0 % = no accumulation at all
+  return Math.min(2, -1 / 60 / Math.log(1 - a));
+}
+
+/** Beam spot sigma in device pixels. The Canvas path strokes a line of width
+ *  lineWidth; a Gaussian of sigma = w/2 has the same apparent thickness. */
+function sigmaFor(lw) { return Math.max(0.5, lw * DPR * 0.5); }
+
+/** Energy deposited per unit of 1/v, per frame. The constant is measured, not
+ *  chosen: sweeping it on the busiest passage of a line-type track and counting
+ *  how much ink the tone map blows out gives 0.05→0 %, 0.13→0.06 %, 0.17→0.9 %,
+ *  0.25→3.6 %. 0.9 % at the default intensity is the same operating point the
+ *  8-bit path was calibrated to (0.66 % there), so the two renderers agree about
+ *  what "not blown out" means. */
+function exposureFor(intensity) { return intensity * 0.19; }
+
 function fadeAlpha() {
   // 0 %  -> 1.0  (full clear every frame, zero afterglow)
   // 100% -> 0.03 (long phosphor-like tail)
@@ -1925,6 +2391,7 @@ function drawTrace(L, R, capacity, n, live) {
   /* ---- ONE pass: map to pixels, track peaks, bucket the segments ------ */
   let peakL = 0, peakR = 0, total = 0;
   let prevX = 0, prevY = 0;
+  let segN = 0;                       // instances handed to the energy renderer
   if (blanking) BUCKET_N.fill(0);
 
   for (let i = 0; i < n; i++) {
@@ -1951,12 +2418,28 @@ function drawTrace(L, R, capacity, n, live) {
       // what lets the threshold be a number you can state, test, and set:
       // a segment is dropped when it is more than blankRatio times faster
       // than the typical beam speed.
-      if (blanking && s <= blankAt) {
+      if (!blanking || s <= blankAt) {
         const w = ref / (s + eps);              // brightness ∝ 1/speed
-        let b = Math.ceil(w * topBucket);
-        if (b > topBucket) b = topBucket;
-        else if (b < 1) b = 1;
-        BUCKET_IDX[b * MAXN + BUCKET_N[b]++] = i - 1;
+        if (GL) {
+          /* Energy model: the same 1/v law, but it ADDS — no ladder to quantise
+             into and no ceiling, because the tone map saturates instead. The cap
+             only stops a stationary beam from overflowing a half float; 64 is
+             already far past full brightness. */
+          if (segN < GL.maxSegments) {
+            const o = segN * 5;
+            GL.segData[o] = prevX;
+            GL.segData[o + 1] = prevY;
+            GL.segData[o + 2] = x;
+            GL.segData[o + 3] = y;
+            GL.segData[o + 4] = Math.min(w, 64);
+            segN++;
+          }
+        } else if (blanking) {
+          let b = Math.ceil(w * topBucket);
+          if (b > topBucket) b = topBucket;
+          else if (b < 1) b = 1;
+          BUCKET_IDX[b * MAXN + BUCKET_N[b]++] = i - 1;
+        }
       }
     }
     prevX = x;
@@ -1978,10 +2461,25 @@ function drawTrace(L, R, capacity, n, live) {
   lastPeakR = peakR;
 
   /* ---- paint ---------------------------------------------------------- */
-  paintInto(tctx, n, S.intensity);
+  if (GL) {
+    if (S.beamDot && segN < GL.maxSegments) {
+      // A zero-length segment with a lot of energy IS a stationary beam: the
+      // spot profile makes the dot.
+      const o = segN * 5;
+      GL.segData[o] = PX[n - 1];
+      GL.segData[o + 1] = PY[n - 1];
+      GL.segData[o + 2] = PX[n - 1] + 0.01;
+      GL.segData[o + 3] = PY[n - 1] + 0.01;
+      GL.segData[o + 4] = 4;
+      segN++;
+    }
+    GL.deposit(segN);
+  } else {
+    paintInto(tctx, n, S.intensity);
+  }
 
 
-  if (S.beamDot) {
+  if (S.beamDot && tctx) {
     const lw = S.lineWidth * DPR;
     tctx.fillStyle = S.color;
     tctx.beginPath();
@@ -2036,6 +2534,7 @@ function paintInto(ctx, n, base) {
 
 
 let uiTick = 0;
+let lastFrame = 0;                 // ms, for the energy model's dt
 /* The last captured window. It has to outlive the frame it was read in:
    when paused the analysers report silence and the loop deliberately
    keeps painting this instead of re-reading them. */
@@ -2079,21 +2578,37 @@ function loop(ts) {
   flags.redraw = false;
 
   const workStart = performance.now();
-  // Afterglow is pure subtraction: destination-out only ever removes alpha,
-  // so a bright pixel can never bleed light into its neighbours.
-  if (++scrubTick >= SCRUB_EVERY) {
-    scrubTick = 0;
-    fadeLayer(tctx, scrubAlpha());
+  if (GL) {
+    /* Real elapsed time, so a stalled tab decays by the clock rather than by a
+       frame count — the whole point of a time constant. Clamped: after a long
+       stall the phosphor is simply dark, not negative. */
+    const now = performance.now();
+    const dt = lastFrame ? Math.min(0.1, (now - lastFrame) / 1000) : 1 / 60;
+    lastFrame = now;
+    const rgb = hexToRgb(S.color);
+    GL.setColour(rgb.r / 255, rgb.g / 255, rgb.b / 255);
+    GL.setExposure(exposureFor(S.intensity));
+    GL.setSigma(sigmaFor(S.lineWidth));
+    GL.setTau(tauFor(S.persistence));
+    GL.decay(dt);
   } else {
-    fadeLayer(tctx, fadeAlpha());
+    // Afterglow is pure subtraction: destination-out only ever removes alpha,
+    // so a bright pixel can never bleed light into its neighbours.
+    if (++scrubTick >= SCRUB_EVERY) {
+      scrubTick = 0;
+      fadeLayer(tctx, scrubAlpha());
+    } else {
+      fadeLayer(tctx, fadeAlpha());
+    }
   }
 
   try {
     drawTrace(frame.L, frame.R, frame.capacity, winSize(), live);
+    if (GL) GL.present();
   } catch (err) {
     if (!loop.warned) { loop.warned = true; console.error('[scope] render error', err); }
   }
-  tctx.globalAlpha = 1;
+  if (tctx) tctx.globalAlpha = 1;
   adaptQuality(performance.now() - workStart);
 }
 
@@ -2157,6 +2672,16 @@ function state() {
   };
 }
 
+/** The trace layer as RGBA bytes, whichever renderer is running, so a test can
+ *  read the picture without knowing or caring where it came from. */
+function readTrace(x, y, w, h) {
+  if (GL) return GL.readPixels(x, y, w, h);
+  const d = tctx.getImageData(x, y, w, h);
+  return new Uint8Array(d.data.buffer.slice(0));
+}
+
+const rendererKind = () => (GL ? 'webgl2' : 'canvas2d');
+
 /** Kick off the frame loop (idempotent — the loop re-arms itself). */
 function startLoop() { if (!rafId) rafId = requestAnimationFrame(loop); }
 
@@ -2175,7 +2700,9 @@ __exp.layout = layout;
 __exp.loop = loop;
 __exp.paintInto = paintInto;
 __exp.panelInset = panelInset;
+__exp.readTrace = readTrace;
 __exp.recordWork = recordWork;
+__exp.rendererKind = rendererKind;
 __exp.resetQuality = resetQuality;
 __exp.resetRefSpeed = resetRefSpeed;
 __exp.resetTraceState = resetTraceState;
@@ -3681,6 +4208,8 @@ const {
 } = audio;
 const {
   layout,
+  readTrace,
+  rendererKind,
   resetWorkStats,
   scaleLabel,
   state,
@@ -3721,8 +4250,13 @@ const {
    that no resampling is happening). Harmless in normal use. */
 window.__scope = {
   get state() {
-    return Object.assign(render.state(), audio.status());
+    // `renderer` says which trace path is live — 'webgl2' or the 'canvas2d'
+    // fallback — because a test measuring brightness needs to know which model
+    // produced it.
+    return Object.assign(render.state(), audio.status(), { renderer: render.rendererKind() });
   },
+  /* The trace layer as RGBA bytes, whichever renderer is running. */
+  readTrace: (x, y, w, h) => render.readTrace(x, y, w, h),
   readAnalyser() {
     const a = currentAnalysers();
     if (!a) return null;
