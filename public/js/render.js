@@ -16,6 +16,7 @@ const {
   clamp,
   dom,
   flags,
+  toast,
   winSize,
 } = core;
 
@@ -29,7 +30,14 @@ const WANT_GL = (() => {
   const q = new URLSearchParams(location.search).get('renderer');
   return q !== '2d';
 })();
-const GL = WANT_GL ? glmod.createGL(dom.trace) : null;
+const GL = (() => {
+  if (!WANT_GL) return null;
+  /* Ask the machine, do not assume: a float render target that silently
+     discards every draw is worse than no WebGL at all, because the canvas is
+     then committed to a path that shows nothing. */
+  if (!glmod.probeGL()) return null;
+  return glmod.createGL(dom.trace);
+})();
 const tctx = GL ? null : dom.trace.getContext('2d');
 
 /* --------------------------------------------------------------- geometry */
@@ -662,7 +670,13 @@ function loop(ts) {
 
   try {
     drawTrace(frame.L, frame.R, frame.capacity, winSize(), live);
-    if (GL) GL.present();
+    if (GL) {
+      GL.present();
+      if (GL.state.lost && !loop.lostWarned) {
+        loop.lostWarned = true;      // a lost context is silent otherwise
+        toast('WebGL 上下文丢失，请刷新页面');
+      }
+    }
   } catch (err) {
     if (!loop.warned) { loop.warned = true; console.error('[scope] render error', err); }
   }

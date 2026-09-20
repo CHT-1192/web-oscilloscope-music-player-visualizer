@@ -167,6 +167,45 @@ function program(gl, vsSrc, fsSrc) {
   return { p, uniforms };
 }
 
+/** Does this machine actually render the energy path?
+ *
+ *  Asking for EXT_color_buffer_float is not enough: a driver can advertise it and
+ *  still discard every draw into a float target, which looks exactly like "the
+ *  scope stopped drawing" — an empty graticule and no trace. So this draws one
+ *  segment on a throwaway canvas, reads the frame back and requires light. The
+ *  real canvas is only committed to WebGL if that works, because a canvas hands
+ *  out one context kind for its whole life and there is no way back to 2D.
+ */
+export function probeGL() {
+  let r = null;
+  let canvas = null;
+  try {
+    canvas = document.createElement('canvas');
+    canvas.width = 64;
+    canvas.height = 64;
+    r = createGL(canvas);
+    if (!r) return false;
+    r.resize(64, 64);
+    r.setColour(1, 1, 1);
+    r.setExposure(1);
+    r.setSigma(1.5);
+    r.setTau(1);
+    const seg = r.segData;
+    seg[0] = 10; seg[1] = 32; seg[2] = 54; seg[3] = 32; seg[4] = 1;
+    r.decay(1 / 60);
+    r.deposit(1);
+    r.present();
+    const px = r.readPixels(0, 0, 64, 64);
+    let lit = 0;
+    for (let i = 3; i < px.length; i += 4) if (px[i] > 0) lit++;
+    return lit > 0;
+  } catch (e) {
+    return false;
+  } finally {
+    if (r) r.dispose();
+  }
+}
+
 /** Create the renderer, or return null so the caller can stay on Canvas-2D.
  *  WebGL2 only: WebGL1 would need instancing and float-render extensions, and
  *  every browser this project targets has had WebGL2 for years. Failing to get a
@@ -187,6 +226,16 @@ export function createGL(canvas) {
   } catch (e) { /* no WebGL2 at all */ }
   if (!gl) return null;
   if (!gl.getExtension('EXT_color_buffer_float')) return null;
+
+  /* A lost context turns every draw into a no-op — the same silent blank screen
+     the probe exists to prevent, except it can happen long after startup. There
+     is no way back to a 2D context on this canvas, so the honest thing is to say
+     so rather than look broken. Restoring the GPU resources in place is not
+     implemented; the app keeps running and the user reloads. */
+  canvas.addEventListener('webglcontextlost', (e) => {
+    e.preventDefault();
+    state.lost = true;
+  }, false);
 
   let progDecay, progCopy, progBeam, progTone;
   try {
@@ -213,39 +262,46 @@ export function createGL(canvas) {
   const display = { tex: null, fbo: null, w: 0, h: 0 };
   const scratch = { tex: null, fbo: null, w: 0, h: 0 };
 
-  function makeTarget(t, w, h) {
-    if (t.tex) gl.deleteTexture(t.tex);
-    if (t.fbo) gl.deleteFramebuffer(t.fbo);
-    t.tex = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, t.tex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+  /** Allocate without destroying anything: a resize has to COPY the old
+   *  accumulation first, and deleting it up front is how the picture got wiped
+   *  (the console said `tex is already deleted`). */
+  function allocTexture(w, h, internal, format, type) {
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, internal, w, h, 0, format, type, null);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    t.fbo = gl.createFramebuffer();
-    gl.bindFramebuffer(gl.FRAMEBUFFER, t.fbo);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t.tex, 0);
-    t.w = w;
-    t.h = h;
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    /* Asking for the extension is not the same as the driver being able to render
+       to a float target. If the framebuffer is incomplete every draw is silently
+       discarded, which looks exactly like "the scope stopped drawing". */
+    const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+    if (status !== gl.FRAMEBUFFER_COMPLETE) {
+      gl.deleteFramebuffer(fbo);
+      gl.deleteTexture(tex);
+      throw new Error(`float render target incomplete (0x${status.toString(16)})`);
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);        // also avoids the lazy-init warning
+    return { tex, fbo, w, h };
   }
 
-  function makeDisplay(w, h) {
-    if (display.tex) gl.deleteTexture(display.tex);
-    if (display.fbo) gl.deleteFramebuffer(display.fbo);
-    display.tex = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, display.tex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    display.fbo = gl.createFramebuffer();
-    gl.bindFramebuffer(gl.FRAMEBUFFER, display.fbo);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, display.tex, 0);
-    display.w = w;
-    display.h = h;
+  function adopt(t, next) {
+    if (t.tex) gl.deleteTexture(t.tex);
+    if (t.fbo) gl.deleteFramebuffer(t.fbo);
+    t.tex = next.tex;
+    t.fbo = next.fbo;
+    t.w = next.w;
+    t.h = next.h;
   }
+
+  const makeTarget = (w, h) => allocTexture(w, h, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT);
+  const makeDisplay = (w, h) => allocTexture(w, h, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE);
 
   const state = {
     ok: true,
@@ -268,6 +324,10 @@ export function createGL(canvas) {
     gl.bindBuffer(gl.ARRAY_BUFFER, quad);
     gl.enableVertexAttribArray(loc);
     gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    /* Dividers are per attribute LOCATION and outlive the program that set them,
+       so a fullscreen pass can inherit divisor 1 from the instanced beam pass —
+       which turns its six vertices into one value and draws garbage. */
+    gl.vertexAttribDivisor(loc, 0);
   }
 
   /** Copy the previous accumulation into a fresh target, scaled — a resize must
@@ -275,23 +335,23 @@ export function createGL(canvas) {
   function resize(w, h) {
     if (w < 1 || h < 1) return;
     if (target.w === w && target.h === h) return;
-    const old = target.tex ? { tex: target.tex, fbo: target.fbo, w: target.w, h: target.h } : null;
-    makeTarget(target, w, h);
-    makeDisplay(w, h);
-    if (old) {
-      gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
+    const hadContent = !!target.tex;
+    const next = makeTarget(w, h);
+    const nextDisplay = makeDisplay(w, h);
+    if (hadContent) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, next.fbo);
       gl.viewport(0, 0, w, h);
+      gl.disable(gl.BLEND);
       gl.useProgram(progCopy.p);
       gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, old.tex);
+      gl.bindTexture(gl.TEXTURE_2D, target.tex);      // the OLD one, still alive
       gl.uniform1i(progCopy.uniforms.uAcc, 0);
       bindQuad(progCopy, gl.getAttribLocation(progCopy.p, 'aPos'));
       gl.drawArrays(gl.TRIANGLES, 0, 6);
-      gl.deleteTexture(old.tex);
-      gl.deleteFramebuffer(old.fbo);
-    } else {
-      clear();
     }
+    adopt(target, next);                                 // frees the old, after the copy
+    adopt(display, nextDisplay);
+    if (scratch.tex && (scratch.w !== w || scratch.h !== h)) adopt(scratch, makeTarget(w, h));
     state.width = w;
     state.height = h;
   }
@@ -307,7 +367,7 @@ export function createGL(canvas) {
   /** One frame's worth of phosphor decay, by real elapsed time. */
   function decay(dt) {
     if (!scratch.tex || scratch.w !== target.w || scratch.h !== target.h) {
-      makeTarget(scratch, target.w, target.h);
+      adopt(scratch, makeTarget(target.w, target.h));
     }
     const keep = state.tau > 0 ? Math.exp(-dt / state.tau) : 0;
     gl.bindFramebuffer(gl.FRAMEBUFFER, scratch.fbo);

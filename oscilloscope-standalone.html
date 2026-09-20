@@ -869,7 +869,7 @@ body.idle { cursor: none; }
 
       <section class="group">
         <h3>电子束 <span>beam</span></h3>
-        <label class="row"><span>亮度</span><input type="range" data-set="intensity" min="0.1" max="2" step="0.01" /><output data-out="intensity"></output></label>
+        <label class="row" title="束流曝光量。能量模型下细线需要更大的值才和粗线一样亮，所以范围到 4"><span>亮度</span><input type="range" data-set="intensity" min="0.05" max="4" step="0.01" /><output data-out="intensity"></output></label>
         <label class="row"><span>线宽</span><input type="range" data-set="lineWidth" min="0.5" max="3" step="0.05" /><output data-out="lineWidth"></output></label>
         <label class="row"><span>余辉</span><input type="range" data-set="persistence" min="0" max="100" step="1" /><output data-out="persistence"></output></label>
         <label class="row" title="余辉衰减撞上 8 位量化地板后留下的永久痕迹。余辉越高地板越高，所以「余辉拉高」会留下更亮的残影。0 = 关（定期彻底擦除），越大残留越明显"><span>残留</span><input type="range" data-set="residue" min="0" max="100" step="1" /><output data-out="residue"></output></label>
@@ -1683,6 +1683,45 @@ function program(gl, vsSrc, fsSrc) {
   return { p, uniforms };
 }
 
+/** Does this machine actually render the energy path?
+ *
+ *  Asking for EXT_color_buffer_float is not enough: a driver can advertise it and
+ *  still discard every draw into a float target, which looks exactly like "the
+ *  scope stopped drawing" — an empty graticule and no trace. So this draws one
+ *  segment on a throwaway canvas, reads the frame back and requires light. The
+ *  real canvas is only committed to WebGL if that works, because a canvas hands
+ *  out one context kind for its whole life and there is no way back to 2D.
+ */
+function probeGL() {
+  let r = null;
+  let canvas = null;
+  try {
+    canvas = document.createElement('canvas');
+    canvas.width = 64;
+    canvas.height = 64;
+    r = createGL(canvas);
+    if (!r) return false;
+    r.resize(64, 64);
+    r.setColour(1, 1, 1);
+    r.setExposure(1);
+    r.setSigma(1.5);
+    r.setTau(1);
+    const seg = r.segData;
+    seg[0] = 10; seg[1] = 32; seg[2] = 54; seg[3] = 32; seg[4] = 1;
+    r.decay(1 / 60);
+    r.deposit(1);
+    r.present();
+    const px = r.readPixels(0, 0, 64, 64);
+    let lit = 0;
+    for (let i = 3; i < px.length; i += 4) if (px[i] > 0) lit++;
+    return lit > 0;
+  } catch (e) {
+    return false;
+  } finally {
+    if (r) r.dispose();
+  }
+}
+
 /** Create the renderer, or return null so the caller can stay on Canvas-2D.
  *  WebGL2 only: WebGL1 would need instancing and float-render extensions, and
  *  every browser this project targets has had WebGL2 for years. Failing to get a
@@ -1703,6 +1742,16 @@ function createGL(canvas) {
   } catch (e) { /* no WebGL2 at all */ }
   if (!gl) return null;
   if (!gl.getExtension('EXT_color_buffer_float')) return null;
+
+  /* A lost context turns every draw into a no-op — the same silent blank screen
+     the probe exists to prevent, except it can happen long after startup. There
+     is no way back to a 2D context on this canvas, so the honest thing is to say
+     so rather than look broken. Restoring the GPU resources in place is not
+     implemented; the app keeps running and the user reloads. */
+  canvas.addEventListener('webglcontextlost', (e) => {
+    e.preventDefault();
+    state.lost = true;
+  }, false);
 
   let progDecay, progCopy, progBeam, progTone;
   try {
@@ -1729,39 +1778,46 @@ function createGL(canvas) {
   const display = { tex: null, fbo: null, w: 0, h: 0 };
   const scratch = { tex: null, fbo: null, w: 0, h: 0 };
 
-  function makeTarget(t, w, h) {
-    if (t.tex) gl.deleteTexture(t.tex);
-    if (t.fbo) gl.deleteFramebuffer(t.fbo);
-    t.tex = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, t.tex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+  /** Allocate without destroying anything: a resize has to COPY the old
+   *  accumulation first, and deleting it up front is how the picture got wiped
+   *  (the console said `tex is already deleted`). */
+  function allocTexture(w, h, internal, format, type) {
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, internal, w, h, 0, format, type, null);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    t.fbo = gl.createFramebuffer();
-    gl.bindFramebuffer(gl.FRAMEBUFFER, t.fbo);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t.tex, 0);
-    t.w = w;
-    t.h = h;
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    /* Asking for the extension is not the same as the driver being able to render
+       to a float target. If the framebuffer is incomplete every draw is silently
+       discarded, which looks exactly like "the scope stopped drawing". */
+    const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+    if (status !== gl.FRAMEBUFFER_COMPLETE) {
+      gl.deleteFramebuffer(fbo);
+      gl.deleteTexture(tex);
+      throw new Error(`float render target incomplete (0x${status.toString(16)})`);
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);        // also avoids the lazy-init warning
+    return { tex, fbo, w, h };
   }
 
-  function makeDisplay(w, h) {
-    if (display.tex) gl.deleteTexture(display.tex);
-    if (display.fbo) gl.deleteFramebuffer(display.fbo);
-    display.tex = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, display.tex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    display.fbo = gl.createFramebuffer();
-    gl.bindFramebuffer(gl.FRAMEBUFFER, display.fbo);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, display.tex, 0);
-    display.w = w;
-    display.h = h;
+  function adopt(t, next) {
+    if (t.tex) gl.deleteTexture(t.tex);
+    if (t.fbo) gl.deleteFramebuffer(t.fbo);
+    t.tex = next.tex;
+    t.fbo = next.fbo;
+    t.w = next.w;
+    t.h = next.h;
   }
+
+  const makeTarget = (w, h) => allocTexture(w, h, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT);
+  const makeDisplay = (w, h) => allocTexture(w, h, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE);
 
   const state = {
     ok: true,
@@ -1784,6 +1840,10 @@ function createGL(canvas) {
     gl.bindBuffer(gl.ARRAY_BUFFER, quad);
     gl.enableVertexAttribArray(loc);
     gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    /* Dividers are per attribute LOCATION and outlive the program that set them,
+       so a fullscreen pass can inherit divisor 1 from the instanced beam pass —
+       which turns its six vertices into one value and draws garbage. */
+    gl.vertexAttribDivisor(loc, 0);
   }
 
   /** Copy the previous accumulation into a fresh target, scaled — a resize must
@@ -1791,23 +1851,23 @@ function createGL(canvas) {
   function resize(w, h) {
     if (w < 1 || h < 1) return;
     if (target.w === w && target.h === h) return;
-    const old = target.tex ? { tex: target.tex, fbo: target.fbo, w: target.w, h: target.h } : null;
-    makeTarget(target, w, h);
-    makeDisplay(w, h);
-    if (old) {
-      gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
+    const hadContent = !!target.tex;
+    const next = makeTarget(w, h);
+    const nextDisplay = makeDisplay(w, h);
+    if (hadContent) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, next.fbo);
       gl.viewport(0, 0, w, h);
+      gl.disable(gl.BLEND);
       gl.useProgram(progCopy.p);
       gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, old.tex);
+      gl.bindTexture(gl.TEXTURE_2D, target.tex);      // the OLD one, still alive
       gl.uniform1i(progCopy.uniforms.uAcc, 0);
       bindQuad(progCopy, gl.getAttribLocation(progCopy.p, 'aPos'));
       gl.drawArrays(gl.TRIANGLES, 0, 6);
-      gl.deleteTexture(old.tex);
-      gl.deleteFramebuffer(old.fbo);
-    } else {
-      clear();
     }
+    adopt(target, next);                                 // frees the old, after the copy
+    adopt(display, nextDisplay);
+    if (scratch.tex && (scratch.w !== w || scratch.h !== h)) adopt(scratch, makeTarget(w, h));
     state.width = w;
     state.height = h;
   }
@@ -1823,7 +1883,7 @@ function createGL(canvas) {
   /** One frame's worth of phosphor decay, by real elapsed time. */
   function decay(dt) {
     if (!scratch.tex || scratch.w !== target.w || scratch.h !== target.h) {
-      makeTarget(scratch, target.w, target.h);
+      adopt(scratch, makeTarget(target.w, target.h));
     }
     const keep = state.tau > 0 ? Math.exp(-dt / state.tau) : 0;
     gl.bindFramebuffer(gl.FRAMEBUFFER, scratch.fbo);
@@ -1935,6 +1995,7 @@ function createGL(canvas) {
   };
 }
 
+__exp.probeGL = probeGL;
 __exp.createGL = createGL;
 });
 
@@ -1958,6 +2019,7 @@ const {
   clamp,
   dom,
   flags,
+  toast,
   winSize,
 } = core;
 
@@ -1971,7 +2033,14 @@ const WANT_GL = (() => {
   const q = new URLSearchParams(location.search).get('renderer');
   return q !== '2d';
 })();
-const GL = WANT_GL ? glmod.createGL(dom.trace) : null;
+const GL = (() => {
+  if (!WANT_GL) return null;
+  /* Ask the machine, do not assume: a float render target that silently
+     discards every draw is worse than no WebGL at all, because the canvas is
+     then committed to a path that shows nothing. */
+  if (!glmod.probeGL()) return null;
+  return glmod.createGL(dom.trace);
+})();
 const tctx = GL ? null : dom.trace.getContext('2d');
 
 /* --------------------------------------------------------------- geometry */
@@ -2604,7 +2673,13 @@ function loop(ts) {
 
   try {
     drawTrace(frame.L, frame.R, frame.capacity, winSize(), live);
-    if (GL) GL.present();
+    if (GL) {
+      GL.present();
+      if (GL.state.lost && !loop.lostWarned) {
+        loop.lostWarned = true;      // a lost context is silent otherwise
+        toast('WebGL 上下文丢失，请刷新页面');
+      }
+    }
   } catch (err) {
     if (!loop.warned) { loop.warned = true; console.error('[scope] render error', err); }
   }
@@ -2849,6 +2924,7 @@ __exp.syncControlsFromState = syncControlsFromState;
 __define("js/presets.js", function (__exp, __req) {
 const core = __req("js/core.js");
 const apply = __req("js/apply.js");
+const render = __req("js/render.js");
 
 /* Named looks: the built-in recipes, the user's saved ones, the two modes
    (per-track memory or manual) and the export/import text. Storage lives here;
@@ -2872,14 +2948,30 @@ const {
    exceptions are rateMode and renderScale: those describe the machine you
    happen to be sitting at, and a preset that silently moved someone else's
    audio engine to 192 kHz would be a bug, not a feature. */
-const builtinPreset = (name, over) => ({ name, settings: Object.assign({}, DEFAULTS, over) });
+/* A recipe may carry a `fallback` overlay for the Canvas path. The two
+   renderers need different exposure for the same look — the energy model spreads
+   a thin stroke thinner and adds overlapping ones — and no single number serves
+   both, so the preset states both. */
+const builtinPreset = (name, over, fallback) => ({
+  name,
+  settings: Object.assign({}, DEFAULTS, over),
+  fallback: fallback || null,
+});
 /* The two recipes name all three of their numbers explicitly rather than
    inheriting "whatever the default happens to be" — that inheritance is how
    a preset silently stops matching its own documentation. */
 const BUILTIN_PRESETS = [
   builtinPreset('默认', {}),
-  builtinPreset('描边', { windowIdx: 1, persistence: 16, lineWidth: 1.15 }),          // 1024, 16 %
-  builtinPreset('填充', { windowIdx: 3, persistence: 32, lineWidth: 2.3 }),           // 4096, 32 %
+  /* The three numbers that shape the figure are the ones the README documents.
+     `intensity` is the exposure the ENERGY model needs to land on the same look,
+     and it is per recipe because a thin stroke spreads the same energy over less
+     area than a thick one: measured against each recipe's Canvas-2D appearance,
+     描边 needs ~3.5 (mean alpha 72 vs 78 there) and 填充 ~0.1 (its core saturates
+     either way — energy adds, so a dense figure blows out sooner). */
+  builtinPreset('描边', { windowIdx: 1, persistence: 16, lineWidth: 1.15, intensity: 3.5 },
+    { intensity: 0.9 }),
+  builtinPreset('填充', { windowIdx: 3, persistence: 32, lineWidth: 2.3, intensity: 0.1 },
+    { intensity: 0.9 }),
 ];
 const BUILTIN_NAMES = new Set(BUILTIN_PRESETS.map((p) => p.name));
 const PRESET_STORE = 'scope.presets.v1';
@@ -2910,7 +3002,10 @@ const findPreset = (name) => allPresets().find((p) => p.name === name) || null;
 function applyPreset(name) {
   const p = findPreset(name);
   if (!p) return;
-  applySettings(p.settings);
+  /* The Canvas path gets its own exposure, so the same recipe looks the same on
+     a machine without WebGL2. */
+  const over = p.fallback && render.rendererKind() === 'canvas2d' ? p.fallback : null;
+  applySettings(over ? Object.assign({}, p.settings, over) : p.settings);
   activePreset = name;
   noteSettingsChanged();
   renderPresetUI();

@@ -1,5 +1,6 @@
 import * as core from './core.js';
 import * as apply from './apply.js';
+import * as render from './render.js';
 
 /* Named looks: the built-in recipes, the user's saved ones, the two modes
    (per-track memory or manual) and the export/import text. Storage lives here;
@@ -23,14 +24,30 @@ const {
    exceptions are rateMode and renderScale: those describe the machine you
    happen to be sitting at, and a preset that silently moved someone else's
    audio engine to 192 kHz would be a bug, not a feature. */
-const builtinPreset = (name, over) => ({ name, settings: Object.assign({}, DEFAULTS, over) });
+/* A recipe may carry a `fallback` overlay for the Canvas path. The two
+   renderers need different exposure for the same look — the energy model spreads
+   a thin stroke thinner and adds overlapping ones — and no single number serves
+   both, so the preset states both. */
+const builtinPreset = (name, over, fallback) => ({
+  name,
+  settings: Object.assign({}, DEFAULTS, over),
+  fallback: fallback || null,
+});
 /* The two recipes name all three of their numbers explicitly rather than
    inheriting "whatever the default happens to be" — that inheritance is how
    a preset silently stops matching its own documentation. */
 const BUILTIN_PRESETS = [
   builtinPreset('默认', {}),
-  builtinPreset('描边', { windowIdx: 1, persistence: 16, lineWidth: 1.15 }),          // 1024, 16 %
-  builtinPreset('填充', { windowIdx: 3, persistence: 32, lineWidth: 2.3 }),           // 4096, 32 %
+  /* The three numbers that shape the figure are the ones the README documents.
+     `intensity` is the exposure the ENERGY model needs to land on the same look,
+     and it is per recipe because a thin stroke spreads the same energy over less
+     area than a thick one: measured against each recipe's Canvas-2D appearance,
+     描边 needs ~3.5 (mean alpha 72 vs 78 there) and 填充 ~0.1 (its core saturates
+     either way — energy adds, so a dense figure blows out sooner). */
+  builtinPreset('描边', { windowIdx: 1, persistence: 16, lineWidth: 1.15, intensity: 3.5 },
+    { intensity: 0.9 }),
+  builtinPreset('填充', { windowIdx: 3, persistence: 32, lineWidth: 2.3, intensity: 0.1 },
+    { intensity: 0.9 }),
 ];
 const BUILTIN_NAMES = new Set(BUILTIN_PRESETS.map((p) => p.name));
 const PRESET_STORE = 'scope.presets.v1';
@@ -61,7 +78,10 @@ const findPreset = (name) => allPresets().find((p) => p.name === name) || null;
 function applyPreset(name) {
   const p = findPreset(name);
   if (!p) return;
-  applySettings(p.settings);
+  /* The Canvas path gets its own exposure, so the same recipe looks the same on
+     a machine without WebGL2. */
+  const over = p.fallback && render.rendererKind() === 'canvas2d' ? p.fallback : null;
+  applySettings(over ? Object.assign({}, p.settings, over) : p.settings);
   activePreset = name;
   noteSettingsChanged();
   renderPresetUI();
