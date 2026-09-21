@@ -352,6 +352,7 @@ const signal = () => ({ L: bufL, R: bufR, capacity: analyserSize, float: useFloa
 const status = () => ({
   engineRate: ac ? ac.sampleRate : 0,
   contextState: ac ? ac.state : 'none',
+  clockMs: ac ? ac.currentTime * 1000 : 0,   // advances only while the graph runs
   sourceRate,
   analyserSize,
   source,

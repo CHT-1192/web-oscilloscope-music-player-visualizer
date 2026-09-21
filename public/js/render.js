@@ -82,7 +82,7 @@ let workFilled = 0;
    benchmark reports and what a hitch feels like. Read it with `__scope.perf()`
    or by clicking the 画质 badge; the output is plain text made for copy-paste,
    so nobody has to record a profiler again. */
-const FL_N = 2048;
+const FL_N = 8192;      // ~2.3 min at 60 fps: long enough to report it afterwards
 const flIv = new Float32Array(FL_N);     // ms between rAF ticks
 const flSeg = new Int32Array(FL_N);      // segments deposited by that frame
 const flHalo = new Uint8Array(FL_N);     // halation passes were running
@@ -93,7 +93,44 @@ let flLastSeg = 0, flLastHalo = 0, flResized = false;
 
 function noteEvent(what) {
   flEvents.push({ t: performance.now(), what: String(what) });
-  if (flEvents.length > 60) flEvents.shift();
+  if (flEvents.length > 200) flEvents.shift();
+}
+
+/* ---- the audio watchdog --------------------------------------------------
+   A dropout caused by the audio thread missing its deadline fires NO DOM event:
+   the element still says it is playing, no `waiting`, no `error`, and the renderer
+   keeps painting — there is simply silence, and if nothing is playing there is
+   nothing to paint either. That is the reported symptom, and it cannot be caught
+   by listening to events.
+
+   What does move is the AUDIO CLOCK: `AudioContext.currentTime` only advances
+   while the graph is actually being rendered, so wall-clock progress minus
+   audio-clock progress IS the dropout, in milliseconds. Log it, together with
+   silence while supposedly playing and the element's own state.
+
+   Also timestamped here: page lifecycle (a frozen/backgrounded tab is a prime
+   suspect), the context state, and Firefox's own long-task entries when it
+   supports them. */
+let lastClock = 0, lastClockWall = 0, ctxState = '', silentMs = 0;
+function watchAudio(now) {
+  const st = audio.status();
+  if (st.contextState !== ctxState) {
+    noteEvent(`音频上下文 ${ctxState || '(未建)'} → ${st.contextState}`);
+    ctxState = st.contextState;
+  }
+  const el = dom.audio;
+  const live = !el.paused && !el.ended && st.contextState === 'running';
+  if (lastClock && st.clockMs) {
+    const slip = (now - lastClockWall) - (st.clockMs - lastClock);
+    if (live && slip > 40) {
+      const buffered = el.buffered.length ? el.buffered.end(el.buffered.length - 1) - el.currentTime : 0;
+      noteEvent(`音频时钟落后 ${Math.round(slip)} ms · 静默 ${Math.round(silentMs)} ms · readyState ${el.readyState} · 缓冲 ${buffered.toFixed(1)}s`);
+    }
+  }
+  if (st.clockMs) { lastClock = st.clockMs; lastClockWall = now; }
+  const quiet = live && lastPeakL < 1e-4 && lastPeakR < 1e-4;
+  silentMs = quiet ? silentMs + 100 : 0;
+  if (silentMs === 1200) noteEvent(`信号静默 1.2 s(在播放但分析器全 0)· readyState ${el.readyState}`);
 }
 
 function recordFrame(now) {
@@ -778,7 +815,7 @@ function loop(ts) {
   recordFrame(now);           // every tick counts, even the ones that paint nothing
   // The scrubber only needs ~10 Hz; writing three DOM properties every frame
   // was costing more than it looked.
-  if (now - uiTick > 100) { uiTick = now; if (tick) tick(); }
+  if (now - uiTick > 100) { uiTick = now; if (tick) tick(); watchAudio(now); }
   if (document.hidden) return;
   if (!W || !H) return;
 
@@ -869,6 +906,18 @@ function resetTraceState({ settle = false } = {}) {
 
 /** The reference speed is stale whenever the window or the trigger moves. */
 function resetRefSpeed() { refSpeed = 0; flags.redraw = true; }
+
+/* Page lifecycle and long tasks: a frozen tab or a 200 ms task explains a stall
+   that the frame log would otherwise only show as a number. */
+for (const ev of ['freeze', 'resume', 'pagehide', 'pageshow']) {
+  document.addEventListener(ev, () => noteEvent(`页面 ${ev}`));
+}
+document.addEventListener('visibilitychange', () => noteEvent(`可见性 ${document.visibilityState}`));
+try {
+  new PerformanceObserver((list) => {
+    for (const e of list.getEntries()) noteEvent(`长任务 ${Math.round(e.duration)} ms`);
+  }).observe({ entryTypes: ['longtask'] });
+} catch (e) { /* Firefox without the longtask entry type */ }
 
 /** The quality governor restarts from scratch (used by "restore defaults"). */
 function resetQuality() { autoScale = 1; workAvg = 0; qualityCooldown = 120; }

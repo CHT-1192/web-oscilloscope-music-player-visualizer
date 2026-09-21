@@ -829,13 +829,15 @@ async function renderTests(pw, rq = '') {
   const perf = await page.evaluate(() => {
     const text = window.__scope.perf();
     return { text, hasLow: /1% low/.test(text), hasWorst: /最差的几帧/.test(text),
+             hasAudio: /音频上下文|音频时钟落后/.test(text),
              frames: /(\d+) 帧/.exec(text) ? Number(/(\d+) 帧/.exec(text)[1]) : 0 };
   });
-  if (perf.hasLow && perf.hasWorst && perf.frames > 200) {
+  if (perf.hasLow && perf.hasWorst && perf.hasAudio && perf.frames > 200) {
     ok('the frame log reports the tail, not just the median',
       perf.text.split('\n')[1].trim().slice(0, 78));
   } else {
-    bad('the frame log reports the tail', JSON.stringify({ frames: perf.frames, hasLow: perf.hasLow }));
+    bad('the frame log reports the tail',
+      JSON.stringify({ frames: perf.frames, hasLow: perf.hasLow, hasAudio: perf.hasAudio }));
   }
   const logged = await page.evaluate(() => new Promise((res) => {
     const orig = console.log;
