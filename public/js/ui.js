@@ -361,10 +361,6 @@ function onKey(e) {
       dom.audio.volume = Number(dom.volume.value);
       toast(`音量 ${Math.round(dom.audio.volume * 100)}%`);
       break;
-    case 'l': case 'L':
-      render.perfLog();                 // frame log → console (copy-pasteable)
-      toast('帧统计已输出到控制台');
-      break;
     case ',': nextTrack(-1); break;
     case '.': nextTrack(1); break;
     case 'd': case 'D': {
@@ -373,7 +369,14 @@ function onKey(e) {
       if (on && !S.trigger) { S.trigger = true; syncControlsFromState(); }
       break;
     }
-    case 'l': case 'L': togglePanel('panelList'); break;
+    case 'l': togglePanel('panelList'); break;
+    /* Shift+L rather than plain L: the log is a diagnostic, the playlist is what
+       people actually use, and a dead duplicate `case 'l'` was hiding the
+       collision until the docs were read against the code. */
+    case 'L':
+      render.perfLog();
+      toast('帧统计已输出到控制台');
+      break;
     case 'p': case 'P': togglePanel('panelSettings'); break;
     case 'f': case 'F':
       if (document.fullscreenElement) document.exitFullscreen();

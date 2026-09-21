@@ -842,11 +842,11 @@ async function renderTests(pw, rq = '') {
   const logged = await page.evaluate(() => new Promise((res) => {
     const orig = console.log;
     console.log = (m) => { console.log = orig; res(String(m).slice(0, 24)); };
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'l', bubbles: true }));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'L', bubbles: true }));
     setTimeout(() => { console.log = orig; res(''); }, 800);
   }));
-  if (/帧日志/.test(logged)) ok('L logs the frame stats', logged);
-  else bad('L logs the frame stats', logged || '(nothing)');
+  if (/帧日志/.test(logged)) ok('⇧L logs the frame stats', logged);
+  else bad('⇧L logs the frame stats', logged || '(nothing)');
 
   /* The shortcut table in the README was dead: onKey survived the module split
      and nothing bound it. Assert one shortcut that is observable without
