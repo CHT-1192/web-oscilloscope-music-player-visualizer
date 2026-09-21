@@ -825,6 +825,40 @@ async function renderTests(pw, rq = '') {
     bad('the dose does not depend on the halo slider', `${flat0} vs ${flat100}`);
   }
 
+  /* ---- the frame log: the numbers, in text, without a profiler ---------- */
+  const perf = await page.evaluate(() => {
+    const text = window.__scope.perf();
+    return { text, hasLow: /1% low/.test(text), hasWorst: /最差的几帧/.test(text),
+             frames: /(\d+) 帧/.exec(text) ? Number(/(\d+) 帧/.exec(text)[1]) : 0 };
+  });
+  if (perf.hasLow && perf.hasWorst && perf.frames > 200) {
+    ok('the frame log reports the tail, not just the median',
+      perf.text.split('\n')[1].trim().slice(0, 78));
+  } else {
+    bad('the frame log reports the tail', JSON.stringify({ frames: perf.frames, hasLow: perf.hasLow }));
+  }
+  const logged = await page.evaluate(() => new Promise((res) => {
+    const orig = console.log;
+    console.log = (m) => { console.log = orig; res(String(m).slice(0, 24)); };
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'l', bubbles: true }));
+    setTimeout(() => { console.log = orig; res(''); }, 800);
+  }));
+  if (/帧日志/.test(logged)) ok('L logs the frame stats', logged);
+  else bad('L logs the frame stats', logged || '(nothing)');
+
+  /* The shortcut table in the README was dead: onKey survived the module split
+     and nothing bound it. Assert one shortcut that is observable without
+     console spying, so the table cannot rot again. */
+  const volBefore = await page.inputValue('#volume');
+  await page.evaluate(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true })));
+  await page.waitForTimeout(200);
+  const volAfter = await page.inputValue('#volume');
+  if (Number(volAfter) > Number(volBefore)) {
+    ok('the keyboard shortcuts are bound', `音量 ${volBefore} → ${volAfter} on ArrowUp`);
+  } else {
+    bad('the keyboard shortcuts are bound', `${volBefore} → ${volAfter}`);
+  }
+
   /* ---- which way the axes point -----------------------------------------
      The convention is X = left, Y = right, positive up. A track (or a reference
      video) made the other way round looks mirrored, and the only honest fix is a

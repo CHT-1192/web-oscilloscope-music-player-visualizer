@@ -60,7 +60,7 @@
 ```bash
 node server.js --open      # 打开 http://127.0.0.1:10240
 node server.js -p 8080     # 换端口（被占用会自动 +1 重试；也可用环境变量 PORT）
-node test/verify.js        # 151 项端到端验证
+node test/verify.js        # 157 项端到端验证
 node test/bench.js         # 性能基准
 node build-standalone.js   # 改完 public/ 后重新生成单文件版
 ```
@@ -89,6 +89,7 @@ node build-standalone.js   # 改完 public/ 后重新生成单文件版
 | `←` `→` | 后退 / 前进 5 秒 | `F` / `S` | 全屏 / 存 PNG |
 | `↑` `↓` | 音量 | `L` / `P` | 播放列表 / 显示设置 |
 | `,` `.` | 上一首 / 下一首 | `O` | 性能模式开关 |
+| `L` | **输出帧日志到控制台**（见下） | | |
 | `B` `T` `G` | 速度消隐 / 相位锁定 / 网格 | `R` | 恢复默认设置 |
 
 ### 参数跟着曲子走，没有通用最优
@@ -248,6 +249,29 @@ oscillofun.flac — 描边 · 已微调
   > 顺带：亮度用的是**沿路径平滑过的** 1/束速（磷酸粉在一个光斑宽度上做积分），
   > 否则采样级的抖动同样会把笔画点阵化 —— 虚线应该是"一段一段"，不是"一点一点"。
 
+### 卡顿就看日志,不用录 profiler
+
+按 **`L`**（或控制台里 `__scope.perf()`，`__scope.perf(60)` 只看最近 60 秒）会往控制台打一段
+纯文本帧日志,可以直接复制:
+
+```
+帧日志:360.0s / 20578 帧
+  中位 16.68 ms (60.0 fps) · p90 17.10 · p99 17.59 · p99.9 119.53 · 最差 480.2 ms
+  1% low 21.1 fps · 0.1% low 4.5 fps
+  超 20/33/50 ms 的帧:77 / 58 / 44
+  最差的几帧:
+    480.2 ms (2.1 fps) · 0 seg · 光晕开 · 该帧前刚 resize
+    ...
+  事件(负号 = 多少秒前):
+    -1.2s  音频 waiting
+    -3.4s  resize 3024×1964 @2x
+```
+
+它记的是**帧间隔**（不是帧内工作时间），并且给最差的那几帧记下当时的**线段数、光晕开关、
+是否刚 resize** —— 所以"这一下是我的渲染、还是合成器/系统"当场就能分辨。媒体事件
+（playing/pause/waiting/stalled/error）也打在同一条时间线上,"没声"那一刻前后发生了什么
+一目了然。窗口是最近 2048 帧。
+
 ### 手性：X / Y 反向
 
 约定是 **X = 左声道、Y = 右声道，Y 的正方向朝上**（示波器的分划板就是这么画的）。但
@@ -301,7 +325,7 @@ public/index.html  styles.css
 build-standalone.js             模块内联器 + 生成单文件版
 oscilloscope-standalone.html    单文件版（生成物，但要提交）
 docs/                           预览图
-test/verify.js                  151 项端到端验证
+test/verify.js                  157 项端到端验证
 test/bench.js                   性能基准
 LICENSE                         Apache License 2.0（取自 apache.org 原文，仅填入版权行）
 ```

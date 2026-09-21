@@ -95,6 +95,9 @@ window.__scope = {
     // produced it.
     return Object.assign(render.state(), audio.status(), { renderer: render.rendererKind() });
   },
+  /* Frame-time tail as text: __scope.perf() or __scope.perf(60) for the last
+     minute. Anything a profiler would be needed for is in here instead. */
+  perf: (seconds) => render.perfLog(seconds),
   /* The trace layer as RGBA bytes, whichever renderer is running. */
   readTrace: (x, y, w, h) => render.readTrace(x, y, w, h),
   readAnalyser() {

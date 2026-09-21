@@ -75,6 +75,78 @@ const WORK_SORT = new Float32Array(120);
 let workPos = 0;
 let workFilled = 0;
 
+/* ---- frame log -----------------------------------------------------------
+   A rolling window of frame INTERVALS, with the two things that can make one
+   long: how many segments were deposited, and whether the halation passes ran.
+   The median never shows a hitch — 1 % / 0.1 % low does, which is what a
+   benchmark reports and what a hitch feels like. Read it with `__scope.perf()`
+   or by clicking the 画质 badge; the output is plain text made for copy-paste,
+   so nobody has to record a profiler again. */
+const FL_N = 2048;
+const flIv = new Float32Array(FL_N);     // ms between rAF ticks
+const flSeg = new Int32Array(FL_N);      // segments deposited by that frame
+const flHalo = new Uint8Array(FL_N);     // halation passes were running
+const flScale = new Uint8Array(FL_N);    // canvas was resized during it
+const flEvents = [];                     // {t, what}
+let flAt = 0, flFilled = 0, flPrev = 0;
+let flLastSeg = 0, flLastHalo = 0, flResized = false;
+
+function noteEvent(what) {
+  flEvents.push({ t: performance.now(), what: String(what) });
+  if (flEvents.length > 60) flEvents.shift();
+}
+
+function recordFrame(now) {
+  const iv = flPrev ? now - flPrev : 0;
+  flPrev = now;
+  if (iv <= 0 || iv > 5000) return;
+  flIv[flAt] = iv; flSeg[flAt] = flLastSeg;
+  flHalo[flAt] = flLastHalo; flScale[flAt] = flResized ? 1 : 0;
+  flResized = false;
+  flAt = (flAt + 1) % FL_N;
+  if (flFilled < FL_N) flFilled++;
+}
+
+/** The frame log as text. `seconds` limits it to the recent past. */
+function perfLog(seconds = 0) {
+  if (!flFilled) return '帧日志:还没有数据';
+  const pick = [];
+  let span = 0;
+  for (let k = 0; k < flFilled; k++) {
+    const i = (flAt - 1 - k + FL_N) % FL_N;
+    pick.push(i); span += flIv[i];
+    if (seconds && span >= seconds * 1000) break;
+  }
+  const iv = pick.map((i) => flIv[i]).sort((a, b) => a - b);
+  const q = (p) => iv[Math.min(iv.length - 1, Math.floor(p * (iv.length - 1)))];
+  const low = (f) => {
+    const k = Math.max(1, Math.round(iv.length * f));
+    let sum = 0;
+    for (let i = iv.length - k; i < iv.length; i++) sum += iv[i];
+    return 1000 / (sum / k);
+  };
+  const over = (t) => iv.filter((x) => x > t).length;
+  const worst = pick.slice().sort((a, b) => flIv[b] - flIv[a]).slice(0, 6);
+  const now = performance.now();
+  const lines = [
+    `帧日志:${(span / 1000).toFixed(1)}s / ${iv.length} 帧`,
+    `  中位 ${q(0.5).toFixed(2)} ms (${(1000 / q(0.5)).toFixed(1)} fps) · p90 ${q(0.9).toFixed(2)} · p99 ${q(0.99).toFixed(2)} · p99.9 ${q(0.999).toFixed(2)} · 最差 ${iv[iv.length - 1].toFixed(1)} ms`,
+    `  1% low ${low(0.01).toFixed(1)} fps · 0.1% low ${low(0.001).toFixed(1)} fps`,
+    `  超 20/33/50 ms 的帧:${over(20)} / ${over(33)} / ${over(50)}`,
+    '  最差的几帧:',
+  ];
+  for (const i of worst) {
+    lines.push(`    ${flIv[i].toFixed(1)} ms (${(1000 / flIv[i]).toFixed(1)} fps) · ${flSeg[i]} 段 · 光晕${flHalo[i] ? '开' : '关'}${flScale[i] ? ' · 该帧前刚 resize' : ''}`);
+  }
+  if (flEvents.length) {
+    lines.push('  事件(负号 = 多少秒前):');
+    for (const e of flEvents.slice(-14)) lines.push(`    ${((e.t - now) / 1000).toFixed(1)}s  ${e.what}`);
+  }
+  const text = lines.join('\n');
+  console.log(text);
+  return text;
+}
+
 function recordWork(ms) {
   WORK_RING[workPos] = ms;
   workPos = (workPos + 1) % WORK_RING.length;
@@ -166,6 +238,8 @@ function layout() {
   PLOT_Y = (H - PLOT) / 2;
 
   drawBackground();
+  flResized = true;
+  noteEvent(`resize ${W}×${H} @${DPR}x`);
   return true;
 }
 
@@ -190,6 +264,7 @@ function resizeKeeping(canvas, ctx) {
 function applyScale() {
   W = 0; H = 0;
   if (layout()) { flags.redraw = true; flags.settle = 100; }
+  noteEvent(`画质 ${Math.round(autoScale * 100)}%`);
   updatePerfBadge();
   const out = document.querySelector('[data-out="renderScale"]');
   if (out) {
@@ -700,6 +775,7 @@ function setTickHandler(fn) { tick = fn; }
 function loop(ts) {
   rafId = requestAnimationFrame(loop);
   const now = typeof ts === 'number' ? ts : performance.now();
+  recordFrame(now);           // every tick counts, even the ones that paint nothing
   // The scrubber only needs ~10 Hz; writing three DOM properties every frame
   // was costing more than it looked.
   if (now - uiTick > 100) { uiTick = now; if (tick) tick(); }
@@ -762,6 +838,7 @@ function loop(ts) {
       GL.present();
       if (GL.state.lost && !loop.lostWarned) {
         loop.lostWarned = true;      // a lost context is silent otherwise
+        noteEvent('WebGL 上下文丢失');
         toast('WebGL 上下文丢失，请刷新页面');
       }
     }
@@ -769,6 +846,8 @@ function loop(ts) {
     if (!loop.warned) { loop.warned = true; console.error('[scope] render error', err); }
   }
   if (tctx) tctx.globalAlpha = 1;
+  flLastSeg = GL ? GL.state.segments : 0;
+  flLastHalo = S.halo > 0 ? 1 : 0;
   adaptQuality(performance.now() - workStart);
 }
 
@@ -863,6 +942,8 @@ export {
   paintInto,
   panelInset,
   readTrace,
+  noteEvent,
+  perfLog,
   recordWork,
   rendererKind,
   resetQuality,

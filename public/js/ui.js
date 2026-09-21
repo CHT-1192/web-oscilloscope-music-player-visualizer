@@ -78,6 +78,10 @@ function updateTransportUI() {
 let seekHeld = false;
 
 function bindControls() {
+  /* The shortcuts table in the README was a lie: onKey survived the module split
+     but nothing ever bound it, so space / arrows / , / . / D / S / F / O were all
+     dead. Bind it here, where every other control gets wired. */
+  document.addEventListener('keydown', onKey);
   for (const el of document.querySelectorAll('[data-set]')) {
     const key = el.dataset.set;
     const out = document.querySelector(`[data-out="${key}"]`);
@@ -228,9 +232,15 @@ function bindAudioEvents(el) {
     dom.btnPlay.classList.remove('playing');
     if (tracks.length > 1) nextTrack(1);
   });
+  /* Media trouble is exactly what "没声" looks like from the inside, and it is
+     invisible while it is happening. Timestamp it into the frame log. */
+  for (const ev of ['playing', 'pause', 'waiting', 'stalled', 'suspend', 'emptied']) {
+    el.addEventListener(ev, () => render.noteEvent(`音频 ${ev}${el.error ? ' err' + el.error.code : ''}`));
+  }
   el.addEventListener('error', () => {
     if (!el.src) return;
     const code = el.error ? el.error.code : 0;
+    render.noteEvent(`音频 error code=${code}`);
     /* Chromium ships no decoder for some of these at all — canPlayType returns
        the empty string — so "cannot decode" is true but useless: it sends people
        off to re-encode a file that was never broken. Name it instead. */
@@ -350,6 +360,10 @@ function onKey(e) {
       dom.volume.value = String(clamp(Number(dom.volume.value) - 0.05, 0, 1));
       dom.audio.volume = Number(dom.volume.value);
       toast(`音量 ${Math.round(dom.audio.volume * 100)}%`);
+      break;
+    case 'l': case 'L':
+      render.perfLog();                 // frame log → console (copy-pasteable)
+      toast('帧统计已输出到控制台');
       break;
     case ',': nextTrack(-1); break;
     case '.': nextTrack(1); break;
