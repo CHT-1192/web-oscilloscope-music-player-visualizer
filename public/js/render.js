@@ -87,6 +87,7 @@ const flIv = new Float32Array(FL_N);     // ms between rAF ticks
 const flSeg = new Int32Array(FL_N);      // segments deposited by that frame
 const flHalo = new Uint8Array(FL_N);     // halation passes were running
 const flScale = new Uint8Array(FL_N);    // canvas was resized during it
+const flT = new Float64Array(FL_N);      // when that frame ended
 const flEvents = [];                     // {t, what}
 let flAt = 0, flFilled = 0, flPrev = 0;
 let flLastSeg = 0, flLastHalo = 0, flResized = false;
@@ -121,8 +122,14 @@ function watchAudio(now) {
   const el = dom.audio;
   const live = !el.paused && !el.ended && st.contextState === 'running';
   if (lastClock && st.clockMs) {
-    const slip = (now - lastClockWall) - (st.clockMs - lastClock);
-    if (live && slip > 40) {
+    const dClock = st.clockMs - lastClock;
+    const dWall = now - lastClockWall;
+    /* A track at a different sample rate gets a NEW AudioContext and the clock
+       restarts at zero. That is not a dropout, and reporting it as "落后 356 s"
+       (the first real capture did exactly that) is the instrument lying. */
+    if (dClock < -100) noteEvent('音频上下文重建（换采样率，时钟归零）');
+    const slip = dWall - dClock;
+    if (dClock >= -100 && live && slip > 40) {
       const buffered = el.buffered.length ? el.buffered.end(el.buffered.length - 1) - el.currentTime : 0;
       noteEvent(`音频时钟落后 ${Math.round(slip)} ms · 静默 ${Math.round(silentMs)} ms · readyState ${el.readyState} · 缓冲 ${buffered.toFixed(1)}s`);
     }
@@ -139,6 +146,7 @@ function recordFrame(now) {
   if (iv <= 0 || iv > 5000) return;
   flIv[flAt] = iv; flSeg[flAt] = flLastSeg;
   flHalo[flAt] = flLastHalo; flScale[flAt] = flResized ? 1 : 0;
+  flT[flAt] = now;
   flResized = false;
   flAt = (flAt + 1) % FL_N;
   if (flFilled < FL_N) flFilled++;
@@ -163,23 +171,31 @@ function perfLog(seconds = 0) {
     return 1000 / (sum / k);
   };
   const over = (t) => iv.filter((x) => x > t).length;
+  /* Frames the browser itself stretched (hidden tab → rAF throttled to ~1 Hz, so
+     its intervals are whole seconds). Counting them in the 1 % low makes the app
+     look terrible for something it did not do — the first real capture's "0.1 %
+     low 0.7 fps" was nine of these and nothing else. */
+  const stretched = pick.filter((i) => flIv[i] > 900).length;
+  const honest = pick.filter((i) => flIv[i] <= 900).map((i) => flIv[i]).sort((a, b) => a - b);
+  const hq = (pp) => (honest.length ? honest[Math.min(honest.length - 1, Math.floor(pp * (honest.length - 1)))] : 0);
   const worst = pick.slice().sort((a, b) => flIv[b] - flIv[a]).slice(0, 6);
   const now = performance.now();
   const lines = [
     `帧日志:${(span / 1000).toFixed(1)}s / ${iv.length} 帧`,
     `  中位 ${q(0.5).toFixed(2)} ms (${(1000 / q(0.5)).toFixed(1)} fps) · p90 ${q(0.9).toFixed(2)} · p99 ${q(0.99).toFixed(2)} · p99.9 ${q(0.999).toFixed(2)} · 最差 ${iv[iv.length - 1].toFixed(1)} ms`,
-    `  1% low ${low(0.01).toFixed(1)} fps · 0.1% low ${low(0.001).toFixed(1)} fps`,
+    `  1% low ${low(0.01).toFixed(1)} fps · 0.1% low ${low(0.001).toFixed(1)} fps${stretched ? `（其中 ${stretched} 帧是浏览器把隐藏标签页的 rAF 拉长到整秒，见「可见性」事件）` : ''}`,
+    stretched ? `  去掉被拉长的帧后:中位 ${hq(0.5).toFixed(2)} ms · p99 ${hq(0.99).toFixed(2)} · 最差 ${honest[honest.length - 1].toFixed(1)} ms` : '',
     `  超 20/33/50 ms 的帧:${over(20)} / ${over(33)} / ${over(50)}`,
     '  最差的几帧:',
   ];
   for (const i of worst) {
-    lines.push(`    ${flIv[i].toFixed(1)} ms (${(1000 / flIv[i]).toFixed(1)} fps) · ${flSeg[i]} 段 · 光晕${flHalo[i] ? '开' : '关'}${flScale[i] ? ' · 该帧前刚 resize' : ''}`);
+    lines.push(`    ${((flT[i] - now) / 1000).toFixed(1)}s  ${flIv[i].toFixed(1)} ms (${(1000 / flIv[i]).toFixed(1)} fps) · ${flSeg[i]} 段 · 光晕${flHalo[i] ? '开' : '关'}${flScale[i] ? ' · 该帧前刚 resize' : ''}`);
   }
   if (flEvents.length) {
     lines.push('  事件(负号 = 多少秒前):');
     for (const e of flEvents.slice(-14)) lines.push(`    ${((e.t - now) / 1000).toFixed(1)}s  ${e.what}`);
   }
-  const text = lines.join('\n');
+  const text = lines.filter(Boolean).join('\n');
   console.log(text);
   return text;
 }
@@ -815,7 +831,7 @@ function loop(ts) {
   recordFrame(now);           // every tick counts, even the ones that paint nothing
   // The scrubber only needs ~10 Hz; writing three DOM properties every frame
   // was costing more than it looked.
-  if (now - uiTick > 100) { uiTick = now; if (tick) tick(); watchAudio(now); }
+  if (now - uiTick > 100) { uiTick = now; if (tick) tick(); }
   if (document.hidden) return;
   if (!W || !H) return;
 
@@ -906,6 +922,12 @@ function resetTraceState({ settle = false } = {}) {
 
 /** The reference speed is stale whenever the window or the trigger moves. */
 function resetRefSpeed() { refSpeed = 0; flags.redraw = true; }
+
+/* On its OWN TIMER, not on rAF: a hidden tab throttles rAF to about 1 Hz, and
+   that is precisely the state in which a multi-second audio dropout would go
+   unnoticed — which is what the first real capture showed. Timer callbacks keep
+   firing (throttled, but firing) in a hidden tab. */
+setInterval(() => watchAudio(performance.now()), 250);
 
 /* Page lifecycle and long tasks: a frozen tab or a 200 ms task explains a stall
    that the frame log would otherwise only show as a number. */
