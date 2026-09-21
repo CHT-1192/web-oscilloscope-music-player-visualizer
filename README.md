@@ -325,7 +325,11 @@ oscillofun.flac — 描边 · 已微调
 server.js                       零依赖 Node 服务器（静态 + 播放列表 API + Range 流式传输）
 public/js/core.js               叶子：工具函数、设置对象 S、DOM 引用、toast、共享 flags
 public/js/audio.js              音频图、分析器、演示信号、采样率策略          ← core
-public/js/render.js             几何、刻度、束流、两个累积层、帧循环          ← core audio
+public/js/shaders.js            GLSL 源码（另一种语言，另一种 debug 循环）   ← 无
+public/js/gl.js                 能量渲染器：浮点累积、色调映射、halation 云   ← core shaders
+public/js/perf.js               帧间隔环、工作耗时环、掉音看门狗               ← core audio
+public/js/trace.js              束流：采样→像素、1/v 剂量、两个累积层         ← core
+public/js/render.js             几何、刻度、帧循环、画质调节、对外接口        ← core audio gl perf trace
 public/js/apply.js              设置对象 ↔ 控件/引擎/画面 的桥                ← core audio render
 public/js/presets.js            内置与自定义预设、两种模式、导出导入          ← core apply
 public/js/playlist.js           曲目列表、文件选择、演示信号、播放控制        ← core audio render presets
@@ -340,7 +344,10 @@ test/bench.js                   性能基准
 LICENSE                         Apache License 2.0（取自 apache.org 原文，仅填入版权行）
 ```
 
-依赖是**分层单向**的（箭头只往下指，无环）：`core → audio → render → apply → presets → playlist → ui → main`。
+依赖是**分层单向**的（箭头只往下指，无环）：
+`core → {audio, shaders} → {gl, perf, trace} → render → apply → presets → playlist → ui → main`。
+拆分的依据不是行数而是**它们各自的失败方式**:GLSL 写错是驱动报编译错误,`perf.js` 写错是日志里的
+数字不对,`trace.js` 写错是画面不对 —— 三者要用三种办法查,混在一个文件里就只能一起读。
 每个模块只通过命名空间调用（`audio.isLive()`）或顶部解构出来的别名引用依赖，没有跨模块的裸变量 —— 后者在
 一个大文件里永远不会暴露，拆开才看得见。
 
