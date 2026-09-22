@@ -152,11 +152,25 @@ const scaleLabel = () => `${Math.round(effectiveDpr() * 100)}%`;
 
 function updatePerfBadge() {
   const el = $('perfBadge');
-  if (!el) return;
-  const reduced = S.renderScale === 'auto' && autoScale < 1;
-  el.textContent = `画质 ${Math.round(autoScale * 100)}%`;
-  el.className = 'rate-badge perf-badge' + (reduced ? ' is-warn' : '');
-  el.hidden = !reduced;
+  if (el) {
+    const reduced = S.renderScale === 'auto' && autoScale < 1;
+    el.textContent = `画质 ${Math.round(autoScale * 100)}%`;
+    el.className = 'rate-badge perf-badge' + (reduced ? ' is-warn' : '');
+    el.hidden = !reduced;
+  }
+  /* Which model is drawing the picture is not a detail to keep in a devtools
+     object: it decides whether the brightness is accumulated energy or a ten-rung
+     alpha ladder. Say it in the top bar, and say it in the fallback's colour. */
+  const mb = dom.modelBadge;
+  if (mb) {
+    const gl = GL != null;
+    mb.textContent = gl ? '能量模型' : '8 位路径';
+    mb.title = gl
+      ? '亮度是加性累积的 1/束速 能量，浮点缓冲，饱和映射（WebGL2）'
+      : '没有 WebGL2 或浮点渲染目标，退回 8 位：亮度分 10 档、有量化地板、光晕不可用';
+    mb.className = 'rate-badge' + (gl ? '' : ' is-warn');
+    mb.hidden = false;
+  }
 }
 
 /** Shrink the render target when a frame costs too much, grow it back when

@@ -107,6 +107,7 @@ const dom = {
   btnPlay: $('btnPlay'), btnPrev: $('btnPrev'), btnNext: $('btnNext'),
   btnSettings: $('btnSettings'), btnList: $('btnList'), btnDemo: $('btnDemo'),
   btnShot: $('btnShot'), btnFull: $('btnFull'), btnReset: $('btnReset'),
+  modelBadge: $('modelBadge'),
   panelSettings: $('panelSettings'), panelList: $('panelList'),
   trackList: $('trackList'), listCount: $('listCount'),
   fileInput: $('fileInput'), toast: $('toast'), swatches: $('swatches'),

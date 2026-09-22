@@ -825,6 +825,22 @@ async function renderTests(pw, rq = '') {
     bad('the dose does not depend on the halo slider', `${flat0} vs ${flat100}`);
   }
 
+  /* The top bar states which model is drawing. It is the one place a user can
+     see the difference between accumulated energy and a 10-rung alpha ladder, so
+     it must not drift from state.renderer. */
+  const badge = await page.evaluate(() => {
+    const el = document.getElementById('modelBadge');
+    return { text: el ? el.textContent : null, hidden: el ? el.hidden : null,
+             warn: el ? el.classList.contains('is-warn') : null,
+             renderer: window.__scope.state.renderer };
+  });
+  const wantBadge = badge.renderer === 'webgl2' ? '能量模型' : '8 位路径';
+  if (badge.text === wantBadge && badge.hidden === false && badge.warn === (badge.renderer !== 'webgl2')) {
+    ok('the top bar names the model that is drawing', `${badge.renderer} → ${badge.text}`);
+  } else {
+    bad('the top bar names the model that is drawing', JSON.stringify(badge));
+  }
+
   /* ---- the frame log: the numbers, in text, without a profiler ---------- */
   const perf = await page.evaluate(() => {
     const text = window.__scope.perf();
