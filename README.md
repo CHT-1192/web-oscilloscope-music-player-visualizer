@@ -141,6 +141,7 @@ URL 参数：`?renderer=2d` 强制 Canvas 回退，`?demo=1` 内置合成信号�
 
 ```
 server.js                       零依赖服务器：静态文件、播放列表 API、Range 流式传输
+probe.js                        音频头解析：采样率、位深、声道、时长，不解码音频帧
 public/js/core.js               工具函数、设置对象、DOM 引用、toast
 public/js/audio.js              音频图、分析器、演示信号、采样率策略
 public/js/shaders.js            GLSL 源码
@@ -154,9 +155,13 @@ public/js/playlist.js           曲目列表、文件选择、播放控制
 public/js/ui.js                 控件、键盘、面板、拖放
 public/js/main.js               接线与 init
 build-standalone.js             把同一批源码内联成单文件
-test/verify.js                  159 项端到端验证
+test/verify.js                  测试入口：分配端口、起服务器、按顺序跑各段
+test/harness.js                 断言与计数、HTTP 客户端、起服务器、找浏览器
+test/sections/*.js              159 项按失败方式分段：port、http、render-*、presets、resample、standalone
 test/bench.js                   性能基准
 ```
+
+服务器和测试也按失败方式拆：`server.js` 管路由、Range 和启动，音频头解析在 `probe.js`（写错是播放列表里的数字不对）；`verify.js` 只当入口，每一项检查在 `test/sections/` 里，渲染段是一个浏览器会话加一串场景（消隐、光晕、坐标、剖面、实时音频、累积层、主题）。
 
 模块是单向依赖的：core → audio / shaders → gl / perf / trace → render → apply → presets → playlist → ui → main。拆分的依据是失败方式：GLSL 写错是驱动报编译错，perf 写错是日志里的数字不对，trace 写错是画面不对，三种查法混在一个文件里没法用。模块之间只通过命名空间调用或者顶部解构出来的别名引用，没有跨模块的裸变量。
 

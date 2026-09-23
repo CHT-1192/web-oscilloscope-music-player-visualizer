@@ -36,9 +36,14 @@ public/js/presets.js   预设、按曲记忆、导入导出
 public/js/playlist.js  曲目列表、文件选择、播放控制
 public/js/ui.js        控件、键盘、面板、拖放
 public/js/main.js      接线、window.__scope、init
-server.js              零依赖服务器：静态、/api/tracks、/media Range
+server.js              零依赖服务器：静态、/api/tracks、/media Range、启动
+probe.js               音频头解析（WAV/FLAC/AIFF/CAF/MP4/Ogg/MP3），只读头部不解码
 build-standalone.js    把同一批模块内联成单文件
-test/verify.js         159 项；test/bench.js 性能基准
+test/verify.js         测试入口：分配端口、起服务器、按 key 顺序跑各段
+test/harness.js        断言与计数、HTTP 客户端、起服务器、找 Playwright/Chromium
+test/sections/*.js     159 项按失败方式分段：port、http、render-synth、render（会话驱动）、
+                       render-blanking/halo/model/axes/profile/audio/surface/theme/webgl-absent、
+                       presets、resample、standalone；test/bench.js 性能基准
 ```
 
 依赖单向无环：`core → {audio, shaders} → {gl, perf, trace} → render → apply → presets → playlist → ui → main`。模块之间只用命名空间调用（`audio.isLive()`）或顶部解构出的别名，禁止跨模块裸变量。拆分的依据是失败方式：GLSL 写错是驱动编译错，perf 写错是日志数字不对，trace 写错是画面不对。
@@ -133,7 +138,7 @@ E *= exp(-dt/τ)                     dt 取 performance.now() 真实差值，上
 ## 未完成
 
 - `docs/preview.png`、`docs/preview-primer.png`、`docs/preview-warp.png` 还是"光斑随剂量变宽、1/v 被压平"时期截的，观感偏旧；`docs/energy-vs-canvas.png` 与 `docs/ui.png` 是当前的。
-- `test/verify.js`（2075 行）与 `server.js`（771 行）还没拆。计划：verify.js 保留 harness，把 render/presets/resample/standalone 四段移进 `test/sections/*.js`；server.js 的媒体探测（约 300 行）移进 `probe.js`。`playlist.js`（469）里的客户端 `probeNativeRate` 同理。`presets.js`（415）与 `audio.js`（387）内聚，不建议动。
+- `playlist.js`（469 行）里的客户端 `probeNativeRate` 还没拆，它和服务端的 `probe.js` 解析的是同一批容器，两边都改的时候容易只改一边。`test/sections/presets.js`（311）稍微超过 300 行，但整段就是一个功能，暂时不动。`presets.js`（415）与 `audio.js`（387）内聚，不建议动。
 - 一次"卡且没声音"没能稳定复现。已有日志抓到过两种情况：一是隐藏标签页的 rAF 被节流到 1 Hz（那不是卡顿），二是换采样率导致 AudioContext 重建（那不是掉音）。真正待抓的是 `音频时钟落后` 或 `音频上下文 → interrupted` 或 `页面 freeze`。复现时按 `⇧L` 把日志贴出来。
 - 裸 `.aac`（ADTS）与 `.webm/.weba`（EBML）没有解析，会退回设备采样率，也就是会被重采样。已知缺口。
 - 根目录有个未跟踪的 `package-lock.json`（本项目零依赖）。提交与否由用户决定，之前误提交过一次已回滚。
