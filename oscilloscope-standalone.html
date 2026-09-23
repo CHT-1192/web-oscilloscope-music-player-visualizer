@@ -1034,12 +1034,18 @@ const BUCKETS = 10;          // velocity-blanking brightness levels (bucket 0 = 
    default) pushed it to 5.3 % at 2048 and 12.8 % at 4096 — a picture that has
    dissolved into a solid mass. 2048 is the largest window that still stays
    under ~1 %, because a 4096 window already self-overlaps within one frame.
+   blankRatio is the one default deliberately below the midpoint. Frozen window,
+   15x as the reference (nothing blanked): 10x drops 4.0 / 5.3 / 0.4 % of the
+   lit ink on 方块 / 穿梭 / 棋盘格, 3x drops 9.7 / 15.2 / 9.4 %. What 3x takes
+   that 10x kept is the 3x-10x band of beam speeds: fast, but not obviously a
+   retrace. That lands on the material's own fastest sweeps, which is why a
+   穿梭 passage is where it shows, so raise it per track from there.
      窗口 (1 + 3) / 2 = 2 · 余辉 (16 + 32) / 2 = 24 · 线宽 (1.15 + 2.3) / 2 ≈ 1.75 */
 const DEFAULTS = {
   gainX: 1, gainY: 1, offX: 0, offY: 0,
   windowIdx: 2,
   intensity: 0.9, lineWidth: 1.75, persistence: 24, residue: 0,
-  blankRatio: 10, halo: 0,
+  blankRatio: 3, halo: 0,
   color: '#3dff9c',
   rateMode: 'auto',
   renderScale: 'auto',
