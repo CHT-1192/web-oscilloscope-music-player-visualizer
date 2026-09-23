@@ -83,13 +83,10 @@ function sigmaFor(lw) { return Math.max(0.5, lw * T.dpr * 0.5); }
    % of full brightness and the cloud is obvious, while around a single thin
    stroke the same taps average a few percent and no amplitude short of this makes
    it read at all. 光晕 is the knob for which of those you are looking at. */
-const HALO_CLOUD = 0.9;
+const HALO_CLOUD = 2.2;
 function haloMix() {
   if (!S.halo) return 0;
-  // Curved, because the cloud is a convolution of what is already on screen: on
-  // a dense figure it is obvious by 40 % and by 100 % it has washed the trace
-  // out. h^1.5 keeps the whole slider usable instead of saturating halfway.
-  return HALO_CLOUD * Math.pow(clamp(S.halo / 100, 0, 1), 1.5);
+  return HALO_CLOUD * Math.pow(clamp(S.halo / 100, 0, 1), 1.4);
 }
 
 /** Energy deposited per unit of 1/v, per frame. The constant is measured, not

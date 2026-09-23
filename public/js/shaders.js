@@ -135,48 +135,39 @@ void main() {
    attempt produced. Halation scatters light that has ALREADY been emitted, i.e.
    the bounded luminance, and then it can never exceed its own amplitude.
 
-   Five mip levels, weighted, approximate the long-tailed point spread function
-   for five texture fetches and no extra passes. Sum of weights = 1, so the cloud
-   adds at most uMix to any pixel. */
-/* The taps are AVERAGES over 8, 16, 32, 64, 128 and 256 pixels, and how they are
+   Four mip levels, weighted, approximate the long-tailed point spread function
+   for four texture fetches and no extra passes. */
+/* The taps are AVERAGES over 2, 16, 64 and 256 pixel cells, and how they are
    weighted is the whole game. Weighting the narrow ones (the obvious "bloom"
    choice) gives a tight halo that hugs the trace and dies within one octave.
-   Weighting them EQUALLY gives each octave the same contribution, which is what
-   a long-tailed, roughly 1/r glare looks like: a bright core, then a skirt that
-   keeps going out to a sixth of the screen. That is the cloud in reference
-   photos 2 and 3, and it is a convolution — its far field is the local average
-   luminance, which is why the cloud is obvious around a dense figure and nearly
-   invisible around one thin line. Nothing here rescales that away: the taps sum
-   to 1 and every tap is <= 1, so the cloud adds at most uMix and never becomes a
-   second image of the trace. */
+   Weighting the octaves EQUALLY gives a long, roughly 1/r skirt, which is the
+   cloud in reference photos 2 and 3.
+
+   The wide taps are gamma-lifted, and that is not decoration. A flat box average
+   is a bad estimate of a 1/r tail: a thin trace inside a 256-px cell averages a
+   few percent, so the far field came out two or three 8-bit levels above black —
+   measured, on a dense passage, as +2.6/255 on average away from the ink. Nobody
+   can see that, which is why 光晕 100 looked like nothing. pow(x, 0.75) puts the
+   tail back in the visible band; it is monotone, so the profile still falls with
+   distance, and every tap stays <= 1, so the cloud still adds at most uMix and
+   never becomes a second image of the trace. */
 const FRAG_HALO = `#version 300 es
 precision highp float;
 in vec2 vUv;
 uniform sampler2D uSrc;          // tone-mapped frame, mipmapped
 uniform sampler2D uNear;         // blurred mip 4  (~16 px cells)
 uniform sampler2D uWide;         // blurred mip 6  (~64 px cells)
+uniform sampler2D uFar;          // blurred mip 8  (~256 px cells)
 uniform vec3 uColour;
 uniform float uMix;              // halation amplitude; 0 = the pass is skipped
 out vec4 outColour;
 
-/* Three scales of the same scatter: a tight one (mip 1, whose 2-px cells are
-   already finer than a CSS pixel so its lattice is invisible), a mid one and a
-   wide one, both blurred first — see FRAG_BLUR.
-
-   The taps are AVERAGES, and how they are weighted is the whole game. Weighting
-   the narrow ones (the obvious "bloom" choice) gives a halo that hugs the trace
-   and dies within one octave; weighting the octaves EQUALLY gives the long,
-   roughly 1/r tail that reaches a sixth of the screen. That tail is the cloud in
-   reference photos 2 and 3.
-
-   Being a convolution of what is already on screen, the cloud is obvious around
-   a dense figure and nearly invisible around one thin line. That is not a defect
-   to tune away — it is why those photographs differ from each other so much. */
 void main() {
   float l = texture(uSrc, vUv).a;
-  float h = 0.40 * textureLod(uSrc, vUv, 1.0).a
-          + 0.33 * texture(uNear, vUv).a
-          + 0.27 * texture(uWide, vUv).a;
+  float h = 0.34 * textureLod(uSrc, vUv, 1.0).a
+          + 0.24 * texture(uNear, vUv).a
+          + 0.22 * pow(texture(uWide, vUv).a, 0.75)
+          + 0.20 * pow(texture(uFar, vUv).a, 0.75);
   float a = min(1.0, l + uMix * h);
   outColour = vec4(uColour * a, a);
 }`;

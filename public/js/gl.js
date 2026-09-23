@@ -47,8 +47,6 @@ const {
   VERT_QUAD,
 } = shaders;
 
-const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
-
 function compile(gl, type, src) {
   const s = gl.createShader(type);
   gl.shaderSource(s, src);
@@ -182,6 +180,7 @@ export function createGL(canvas) {
   const haloIn = { tex: null, fbo: null, w: 0, h: 0 };
   const haloNear = { tex: null, fbo: null, w: 0, h: 0 };
   const haloWide = { tex: null, fbo: null, w: 0, h: 0 };
+  const haloFar = { tex: null, fbo: null, w: 0, h: 0 };
 
   /** Allocate without destroying anything: a resize has to COPY the old
    *  accumulation first, and deleting it up front is how the picture got wiped
@@ -282,6 +281,7 @@ export function createGL(canvas) {
     if (haloIn.tex && (haloIn.w !== w || haloIn.h !== h)) adopt(haloIn, makeHaloSrc(w, h));
     if (haloNear.tex && (haloNear.w !== w || haloNear.h !== h)) adopt(haloNear, makeHaloBlur(w, h));
     if (haloWide.tex && (haloWide.w !== w || haloWide.h !== h)) adopt(haloWide, makeHaloBlur(w, h));
+    if (haloFar.tex && (haloFar.w !== w || haloFar.h !== h)) adopt(haloFar, makeHaloBlur(w, h));
     state.width = w;
     state.height = h;
   }
@@ -389,6 +389,7 @@ export function createGL(canvas) {
   function addHalo(from) {
     blurLevel(from, haloNear, 4);
     blurLevel(from, haloWide, 6);
+    blurLevel(from, haloFar, 8);
     gl.bindFramebuffer(gl.FRAMEBUFFER, display.fbo);
     gl.viewport(0, 0, display.w, display.h);
     gl.disable(gl.BLEND);
@@ -402,6 +403,9 @@ export function createGL(canvas) {
     gl.activeTexture(gl.TEXTURE2);
     gl.bindTexture(gl.TEXTURE_2D, haloWide.tex);
     gl.uniform1i(progHalo.uniforms.uWide, 2);
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, haloFar.tex);
+    gl.uniform1i(progHalo.uniforms.uFar, 3);
     gl.uniform3f(progHalo.uniforms.uColour, state.colour[0], state.colour[1], state.colour[2]);
     gl.uniform1f(progHalo.uniforms.uMix, state.halo);
     bindQuad(progHalo, gl.getAttribLocation(progHalo.p, 'aPos'));
@@ -456,9 +460,12 @@ export function createGL(canvas) {
     setExposure(v) { state.exposure = v; },
     setSigma(v) { state.sigma = Math.max(0.5, v); },
     setTau(v) { state.tau = Math.max(0, v); },
-    setHalo(v) { state.halo = clamp01(v); },
+    /** Halation amplitude. The ceiling is 3 rather than 1 because the wide taps
+     *  are averages: at 1 the cloud peaked 2.6/255 above the ink on a dense
+     *  passage, which is below what anyone can see. */
+    setHalo(v) { state.halo = Math.max(0, Math.min(3, v)); },
     dispose() {
-      for (const t of [target, display, scratch, haloIn, haloNear, haloWide]) {
+      for (const t of [target, display, scratch, haloIn, haloNear, haloWide, haloFar]) {
         if (t.tex) gl.deleteTexture(t.tex);
         if (t.fbo) gl.deleteFramebuffer(t.fbo);
       }

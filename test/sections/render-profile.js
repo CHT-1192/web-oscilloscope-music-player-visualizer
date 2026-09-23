@@ -90,6 +90,25 @@ async function profile(ctx) {
     } else {
       bad('around a dense figure the cloud is unmissable', `${dense0} → ${dense100}`);
     }
+    /* Doubling is not the same as being VISIBLE, and that distinction is a bug
+       this suite shipped: the first wide halo measured +2.6/255 on average away
+       from the ink on a real passage and read as "光晕 100 does nothing". So the
+       amplitude is pinned in absolute levels of 255 as well, at a floor well
+       above the point where the eye stops noticing, and the skirt has to actually
+       fall off rather than fog the whole plot evenly. */
+    if (dense100 - dense0 >= 6) {
+      ok('the cloud is bright enough to see, not just to measure',
+        `+${(dense100 - dense0).toFixed(1)}/255 mean over the plot`);
+    } else {
+      bad('the cloud is bright enough to see, not just to measure',
+        `${dense0.toFixed(1)} → ${dense100.toFixed(1)} (+${(dense100 - dense0).toFixed(1)}/255)`);
+    }
+    if (profOn[0] >= profOn[profOn.length - 1] * 2) {
+      ok('the cloud falls off instead of fogging the plot evenly',
+        `${profOn[0]} at 10 px vs ${profOn[profOn.length - 1]} at 130 px`);
+    } else {
+      bad('the cloud falls off instead of fogging the plot evenly', profOn.join('/'));
+    }
   } else if (profOn[0] === 0 && profOn[profOn.length - 1] === 0) {
     ok('Canvas path: no halo at all, as the disabled row says', `nothing past the stroke: ${profOn.join('/')}`);
   } else {
