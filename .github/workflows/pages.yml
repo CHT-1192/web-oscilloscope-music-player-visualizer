@@ -46,11 +46,16 @@ jobs:
         run: node build-standalone.js
 
       # 页面本身没有路由，404.html 只在有人手滑敲错地址时兜底回首页
+      #
+      # api/tracks 是个静态的空列表：没有服务端，播放列表本来就是空的，但让这次
+      # 请求 404 会在控制台留一条红色报错。给静态站一个真的回答，比让应用去撞
+      # 404 干净 —— 界面上的文案不变（仍然是「没有找到音频文件」）。
       - name: 组装站点
         run: |
-          mkdir -p dist
+          mkdir -p dist/api
           cp -R public/. dist/
           cp oscilloscope-standalone.html dist/standalone.html
+          printf '{"tracks":[]}' > dist/api/tracks
           touch dist/.nojekyll          # 关掉 Jekyll，避免下划线开头的文件被吃掉
           cp dist/index.html dist/404.html
 
