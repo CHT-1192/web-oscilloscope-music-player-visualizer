@@ -287,6 +287,16 @@ body.dragging::after {
 .btn.play.playing .i-play { display: none; }
 .btn.play.playing .i-pause { display: block; }
 .btn.on { border-color: var(--accent); color: var(--accent); }
+/* Play mode: one button, three states, so the icon is what changes. The mode
+   shows in the transport rather than in the list panel because it is a property
+   of playback, not of the list — and 单曲 / 随机 have to be visible while the
+   panel is closed. */
+.btn.mode svg { width: 16px; height: 16px; }
+.btn.mode .i-seq, .btn.mode .i-one, .btn.mode .i-rnd { display: none; }
+.btn.mode[data-mode="sequence"] .i-seq { display: block; }
+.btn.mode[data-mode="one"] .i-one { display: block; }
+.btn.mode[data-mode="shuffle"] .i-rnd { display: block; }
+.btn.mode[data-mode="one"], .btn.mode[data-mode="shuffle"] { border-color: var(--accent); color: var(--accent); }
 
 .vol { display: flex; align-items: center; gap: 7px; padding-left: 4px; }
 .vol svg { width: 16px; height: 16px; fill: var(--muted); flex: none; }
@@ -539,6 +549,11 @@ input[type="range"]::-moz-range-thumb {
   transition: all 0.16s;
 }
 .ghost:hover { border-color: var(--edge-strong); color: #e2eeeb; }
+.ghost:disabled { opacity: 0.4; cursor: default; }
+.ghost:disabled:hover { border-color: var(--edge); color: #94a7a4; }
+/* Two clicks, like deleting a preset: clearing the list is one slip away from
+   the button next to it, and "添加本地文件" is not undoable. */
+.ghost.armed { border-color: #ff6b8a; color: #ff6b8a; }
 
 /* ── presets ──────────────────────────────────────────────────────────── */
 
@@ -633,6 +648,57 @@ input[type="range"]::-moz-range-thumb {
 
 /* ── playlist ─────────────────────────────────────────────────────────── */
 
+.list-tools {
+  flex: none;
+  display: flex;
+  gap: 6px;
+  padding: 9px 11px 10px;
+  border-bottom: 1px solid var(--edge);
+}
+.list-tools .filter {
+  flex: 1 1 auto;
+  min-width: 0;
+  appearance: none;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--edge);
+  border-radius: 9px;
+  color: #d3e2de;
+  font: inherit;
+  font-size: 12px;
+  height: 30px;
+  padding: 0 9px;
+}
+.list-tools .filter::placeholder { color: var(--muted-dim); }
+.list-tools .filter:focus { outline: none; border-color: var(--accent); }
+.list-tools select {
+  appearance: none;
+  flex: none;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--edge);
+  border-radius: 9px;
+  color: #c3d4d0;
+  font: inherit;
+  font-size: 12px;
+  height: 30px;
+  padding: 0 6px;
+  cursor: pointer;
+}
+.mini {
+  appearance: none;
+  flex: none;
+  width: 30px;
+  border: 1px solid var(--edge);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.03);
+  color: #c3d4d0;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.list-tools select:hover, .mini:hover { border-color: var(--edge-strong); }
+.mini[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+
 .tracks {
   list-style: none;
   margin: 0;
@@ -642,8 +708,8 @@ input[type="range"]::-moz-range-thumb {
 }
 .track {
   display: grid;
-  grid-template-columns: 24px 1fr;
-  grid-template-areas: "n name" "n meta";
+  grid-template-columns: 24px 1fr auto;
+  grid-template-areas: "n name rm" "n meta rm";
   gap: 1px 8px;
   padding: 9px 10px;
   border-radius: 9px;
@@ -653,6 +719,25 @@ input[type="range"]::-moz-range-thumb {
 }
 .track:hover { background: rgba(255, 255, 255, 0.045); }
 .track.active { border-color: var(--accent); background: var(--accent-wash); }
+.track .rm {
+  grid-area: rm;
+  align-self: center;
+  appearance: none;
+  border: 0;
+  background: none;
+  color: var(--muted-dim);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  padding: 4px 2px 4px 6px;
+  cursor: pointer;
+  /* Always reachable, dim until you are on the row: hiding it entirely makes it
+     unreachable on a touch screen, where there is no hover. */
+  opacity: 0.3;
+  transition: opacity 0.14s, color 0.14s;
+}
+.track:hover .rm, .track .rm:focus-visible { opacity: 1; }
+.track .rm:hover { color: #ff6b8a; }
 .track .n {
   grid-area: n;
   font-family: var(--mono);
@@ -903,9 +988,20 @@ body.idle { cursor: none; }
       <h2>播放列表 <span id="listCount"></span></h2>
       <button type="button" class="x" data-close="panelList" title="关闭">✕</button>
     </div>
+    <div class="list-tools">
+      <input type="search" id="trackFilter" class="filter" placeholder="过滤…" aria-label="过滤曲目" />
+      <select id="trackSort" aria-label="排序方式" title="排序方式">
+        <option value="name">名称</option>
+        <option value="duration">时长</option>
+        <option value="rate">采样率</option>
+        <option value="size">大小</option>
+      </select>
+      <button type="button" class="mini" id="btnSortDir" aria-pressed="false" title="升序 / 降序">↑</button>
+    </div>
     <ul class="tracks" id="trackList"></ul>
     <div class="panel-foot">
       <button type="button" class="ghost" id="btnOpen">＋ 添加本地文件…</button>
+      <button type="button" class="ghost danger" id="btnClear" disabled title="清空列表（不动磁盘上的文件）">清空</button>
     </div>
   </aside>
 
@@ -932,6 +1028,12 @@ body.idle { cursor: none; }
       </button>
       <button type="button" class="btn" id="btnNext" title="下一首 (→)">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.8 6H17v12h-2.2zM6 6l8.6 6L6 18z"/></svg>
+      </button>
+
+      <button type="button" class="btn mode" id="btnMode" data-mode="sequence" aria-label="播放模式：顺序" title="播放模式：顺序（M 切换）">
+        <svg class="i-seq" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
+        <svg class="i-one" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4zm-4-2V9h-1l-2 1v1h1.5v5H13z"/></svg>
+        <svg class="i-rnd" viewBox="0 0 24 24" aria-hidden="true"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
       </button>
 
       <div class="vol" title="音量">
@@ -1097,6 +1199,8 @@ const dom = {
   modelBadge: $('modelBadge'),
   panelSettings: $('panelSettings'), panelList: $('panelList'),
   trackList: $('trackList'), listCount: $('listCount'),
+  trackFilter: $('trackFilter'), trackSort: $('trackSort'),
+  btnSortDir: $('btnSortDir'), btnClear: $('btnClear'), btnMode: $('btnMode'),
   fileInput: $('fileInput'), toast: $('toast'), swatches: $('swatches'),
   presetMode: $('presetMode'), presetChips: $('presetChips'), presetStatus: $('presetStatus'),
   presetRow: $('presetRow'), presetName: $('presetName'), presetText: $('presetText'),
@@ -4017,9 +4121,203 @@ const {
 /** Stable identity: this array is exported, so it is never reassigned. */
 const tracks = [];
 let curIndex = -1;
+
+/* -------------------------------------------------- list state, remembered */
+/* Sort order, play mode, and where the listener was. Persisted, because a list
+   that forgets how you sorted it is a list you sort again every visit. The audio
+   position is only restored for a file the server can hand out again: a dropped
+   file's blob: URL dies with the tab. */
+const STORE = 'scope.playlist.v1';
+const MODES = ['sequence', 'one', 'shuffle'];
+const MODE_LABEL = { sequence: '顺序', one: '单曲循环', shuffle: '随机' };
+const SORT_LABEL = { name: '名称', duration: '时长', rate: '采样率', size: '大小' };
+const prefs = { mode: 'sequence', sortKey: 'name', sortAsc: true, last: null };
+let filter = '';
+/* -Infinity, not 0: the throttle is "now minus the last write", and a page that
+   has been alive for less than five seconds would otherwise swallow its own first
+   write — including the flush on pause, which is the one that matters most. */
+let playheadSavedAt = -Infinity;
+
+function readPrefs() {
+  try {
+    const raw = window.localStorage.getItem(STORE);
+    if (raw) Object.assign(prefs, JSON.parse(raw));
+  } catch (err) { /* private mode, file://, or a hand-edited value */ }
+  if (!MODES.includes(prefs.mode)) prefs.mode = 'sequence';
+  if (!SORT_LABEL[prefs.sortKey]) prefs.sortKey = 'name';
+  prefs.sortAsc = prefs.sortAsc !== false;
+}
+function savePrefs() {
+  try { window.localStorage.setItem(STORE, JSON.stringify(prefs)); } catch (err) { /* ignore */ }
+}
+/** Name, format, codec and the meta line, so "44.1" finds the CD-rate files and
+    "flac" finds the FLACs without a second syntax to learn. */
+const searchable = (t) => `${t.name} ${t.format || ''} ${t.codec || ''} ${t.meta || ''}`.toLowerCase();
+
+/** Compare two tracks for the current sort key. A value nobody knows (a dropped
+    file whose metadata has not loaded yet) sorts last in either direction, rather
+    than pretending to be zero seconds. */
+function compareTracks(a, b) {
+  const unknown = (v) => !v;
+  if (prefs.sortKey === 'duration' || prefs.sortKey === 'rate' || prefs.sortKey === 'size') {
+    const key = prefs.sortKey === 'rate' ? 'sampleRate' : prefs.sortKey;
+    const av = a[key], bv = b[key];
+    if (unknown(av) !== unknown(bv)) return unknown(av) ? 1 : -1;
+    if ((av || 0) !== (bv || 0)) return (av || 0) - (bv || 0);
+  }
+  return a.name.localeCompare(b.name, undefined, { numeric: true });
+}
+/** Reorder in place, so every index stays meaningful. curIndex is remapped by
+    identity, not by arithmetic — that is the part that breaks when the list is
+    re-sorted under a playing track. */
+function sortTracks() {
+  const cur = tracks[curIndex];
+  const dir = prefs.sortAsc ? 1 : -1;
+  tracks.sort((a, b) => (dir * compareTracks(a, b))
+    || a.name.localeCompare(b.name, undefined, { numeric: true }));
+  curIndex = cur ? tracks.indexOf(cur) : -1;
+}
+function setSort(key) {
+  if (!SORT_LABEL[key] || key === prefs.sortKey) return;
+  prefs.sortKey = key;
+  savePrefs();
+  sortTracks();
+  renderPlaylist();
+}
+function toggleSortDir() {
+  prefs.sortAsc = !prefs.sortAsc;
+  savePrefs();
+  sortTracks();
+  renderPlaylist();
+}
+function setFilter(text) {
+  filter = String(text == null ? '' : text);
+  renderPlaylist();
+}
+function setMode(m) {
+  if (!MODES.includes(m)) return;
+  prefs.mode = m;
+  savePrefs();
+  renderListTools();
+}
+function cycleMode() {
+  setMode(MODES[(MODES.indexOf(prefs.mode) + 1) % MODES.length]);
+  toast(`播放模式：${MODE_LABEL[prefs.mode]}`);
+}
+/** What "the track ended" means, per mode. ui.js calls this from its <audio>
+    listeners, because the element is rebuilt whenever the engine changes. */
+function advance() {
+  if (audio.isDemo()) return;
+  if (prefs.mode === 'one') { dom.audio.currentTime = 0; play(); return; }
+  if (prefs.mode === 'shuffle' && tracks.length > 1) {
+    let i = curIndex;
+    while (i === curIndex) i = Math.floor(Math.random() * tracks.length);
+    loadTrack(i, true);
+    return;
+  }
+  if (tracks.length > 1) nextTrack(1);   // 顺序 with one track stops, by design
+}
+/** Remember the playhead for the next visit. Called on timeupdate, so it is
+    throttled: a write per frame would be a write per frame. */
+function notePlayhead() {
+  const t = tracks[curIndex];
+  if (!t || t.blob || audio.isDemo()) return;
+  const now = performance.now();
+  if (now - playheadSavedAt < 5000) return;
+  playheadSavedAt = now;
+  const at = dom.audio.currentTime;
+  if (!Number.isFinite(at) || at < 1) return;
+  prefs.last = { name: t.name, size: t.size || 0, at };
+  savePrefs();
+}
+/** The same thing without the throttle, for pause and for leaving the page. */
+function flushPlayhead() {
+  playheadSavedAt = -Infinity;
+  notePlayhead();
+}
+function noteDuration() {
+  const t = tracks[curIndex];
+  if (!t || t.duration) return;
+  const d = dom.audio.duration;
+  if (!Number.isFinite(d) || d <= 0) return;
+  t.duration = d;
+  if (prefs.sortKey === 'duration') { sortTracks(); renderPlaylist(); }
+}
+/** Same track, same place, but not playing: a page that starts making noise by
+    itself is a page people close. `?play=1` and ▶ start it from there. */
+function restoreLastPlayed() {
+  const last = prefs.last;
+  if (!last || !last.name) return false;
+  const i = tracks.findIndex((t) => t.name === last.name && (!last.size || !t.size || t.size === last.size));
+  if (i < 0) return false;
+  loadTrack(i, false);
+  if (last.at > 1) {
+    const seek = () => {
+      dom.audio.removeEventListener('loadedmetadata', seek);
+      try { dom.audio.currentTime = last.at; } catch (err) { /* ignore */ }
+      flags.redraw = true;
+    };
+    dom.audio.addEventListener('loadedmetadata', seek);
+  }
+  return true;
+}
+/** Stop and unload, without touching the list — used when the row you removed
+    was the one playing. */
+function stopSource() {
+  dom.audio.pause();
+  dom.audio.removeAttribute('src');
+  dom.audio.load();
+  curIndex = -1;
+  presets.setTrackKey(null, null);
+  render.resetTraceState();
+  restoreTitle();
+}
+function removeTrack(i) {
+  const t = tracks[i];
+  if (!t) return;
+  const wasCurrent = i === curIndex;
+  if (t.blob && t.url) { try { URL.revokeObjectURL(t.url); } catch (err) { /* already gone */ } }
+  tracks.splice(i, 1);
+  if (wasCurrent) stopSource();
+  else if (i < curIndex) curIndex--;
+  if (prefs.last && prefs.last.name === t.name) { prefs.last = null; savePrefs(); }
+  renderPlaylist();
+}
+function clearTracks() {
+  for (const t of tracks) {
+    if (t.blob && t.url) { try { URL.revokeObjectURL(t.url); } catch (err) { /* already gone */ } }
+  }
+  tracks.length = 0;
+  prefs.last = null;
+  savePrefs();
+  stopSource();
+  renderPlaylist();
+}
+/** The tools row has to say what will happen next (ascending or descending, which
+    mode), not just what the value is. */
+function renderListTools() {
+  if (dom.trackFilter && dom.trackFilter.value !== filter) dom.trackFilter.value = filter;
+  if (dom.trackSort) dom.trackSort.value = prefs.sortKey;
+  if (dom.btnSortDir) {
+    dom.btnSortDir.textContent = prefs.sortAsc ? '↑' : '↓';
+    dom.btnSortDir.setAttribute('aria-pressed', prefs.sortAsc ? 'false' : 'true');
+    dom.btnSortDir.title = `按${SORT_LABEL[prefs.sortKey]}${prefs.sortAsc ? '升序' : '降序'}（点一下切${prefs.sortAsc ? '降' : '升'}序）`;
+  }
+  if (dom.btnMode) {
+    dom.btnMode.dataset.mode = prefs.mode;
+    dom.btnMode.title = `播放模式：${MODE_LABEL[prefs.mode]}（M 或点我切换）`;
+    dom.btnMode.setAttribute('aria-label', `播放模式：${MODE_LABEL[prefs.mode]}`);
+  }
+  if (dom.btnClear) dom.btnClear.disabled = !tracks.length;
+}
+function initPlaylist() {
+  readPrefs();
+  renderListTools();
+}
 function renderPlaylist() {
   const ul = dom.trackList;
   ul.textContent = '';
+  const q = filter.trim().toLowerCase();
   if (!tracks.length) {
     const li = document.createElement('li');
     li.className = 'empty-note';
@@ -4029,9 +4327,19 @@ function renderPlaylist() {
     li.style.whiteSpace = 'pre-line';
     ul.appendChild(li);
     dom.listCount.textContent = '';
+    renderListTools();
     return;
   }
-  tracks.forEach((t, i) => {
+  const rows = [];
+  tracks.forEach((t, i) => { if (!q || searchable(t).includes(q)) rows.push(i); });
+  if (!rows.length) {
+    const li = document.createElement('li');
+    li.className = 'empty-note';
+    li.textContent = `没有匹配「${filter.trim()}」的曲目`;
+    ul.appendChild(li);
+  }
+  for (const i of rows) {
+    const t = tracks[i];
     const li = document.createElement('li');
     li.className = 'track' + (i === curIndex ? ' active' : '');
     const n = document.createElement('span');
@@ -4043,11 +4351,21 @@ function renderPlaylist() {
     const meta = document.createElement('span');
     meta.className = 'meta';
     meta.textContent = t.meta || '';
-    li.append(n, name, meta);
+    const rm = document.createElement('button');
+    rm.type = 'button';
+    rm.className = 'rm';
+    rm.textContent = '✕';
+    rm.title = t.blob
+      ? '从列表里移除'
+      : '从列表里移除（刷新后会重新扫到磁盘上的文件）';
+    rm.setAttribute('aria-label', `移除 ${t.name}`);
+    rm.addEventListener('click', (e) => { e.stopPropagation(); removeTrack(i); });
+    li.append(n, name, meta, rm);
     li.addEventListener('click', () => loadTrack(i, true));
     ul.appendChild(li);
-  });
-  dom.listCount.textContent = `(${tracks.length})`;
+  }
+  dom.listCount.textContent = q ? `(${rows.length}/${tracks.length})` : `(${tracks.length})`;
+  renderListTools();
 }
 async function loadServerTracks() {
   if (location.protocol === 'file:') return false;
@@ -4063,6 +4381,9 @@ async function loadServerTracks() {
       name: t.name,
       url: t.url,
       blob: false,
+      size: t.size || 0,
+      duration: t.duration || 0,
+      format: t.format || null,
       sampleRate: t.sampleRate || 0,
       codec: t.codec || null,
       meta: [
@@ -4077,6 +4398,7 @@ async function loadServerTracks() {
     }));
     tracks.length = 0;
     tracks.push(...listed);
+    sortTracks();
     renderPlaylist();
     return true;
   } catch (err) {
@@ -4311,20 +4633,25 @@ async function addLocalFiles(files) {
   const list = Array.from(files).filter((f) => /^audio\//.test(f.type) || AUDIO_RE.test(f.name));
   if (!list.length) { toast('没有识别到音频文件'); return; }
   setDemo(false);
-  const first = tracks.length;
   for (const f of list) {
     const info = await probeNativeRate(f);
     tracks.push({
       name: f.name,
       url: URL.createObjectURL(f),
       blob: true,
+      size: f.size || 0,
+      duration: 0,             // filled in when the element reports loadedmetadata
+      format: (info && info.format) || null,
       sampleRate: info && info.rate ? info.rate : 0,
       codec: (info && info.codec) || null,
       meta: describeAudio(info, f.size),
     });
   }
+  sortTracks();
   renderPlaylist();
-  loadTrack(first, true);
+  /* The sort may have moved the files just added, so find the one to play by
+     identity rather than by the index it would have had unsorted. */
+  loadTrack(tracks.findIndex((t) => t.blob && t.name === list[0].name), true);
 }
 /** Rebuild the <audio> element around the engine change and restore where the
     listener was. audio.js drives this because it owns the graph; knowing which
@@ -4437,20 +4764,34 @@ function restoreTitle() {
 
 
 __exp.AUDIO_RE = AUDIO_RE;
+__exp.advance = advance;
 __exp.currentTrack = currentTrack;
 __exp.addLocalFiles = addLocalFiles;
+__exp.clearTracks = clearTracks;
+__exp.cycleMode = cycleMode;
 __exp.describeAudio = describeAudio;
+__exp.flushPlayhead = flushPlayhead;
+__exp.initPlaylist = initPlaylist;
 __exp.loadServerTracks = loadServerTracks;
 __exp.loadTrack = loadTrack;
 __exp.nextTrack = nextTrack;
+__exp.noteDuration = noteDuration;
+__exp.notePlayhead = notePlayhead;
 __exp.play = play;
 __exp.probeNativeRate = probeNativeRate;
 __exp.reloadCurrentSource = reloadCurrentSource;
+__exp.removeTrack = removeTrack;
+__exp.renderListTools = renderListTools;
 __exp.renderPlaylist = renderPlaylist;
+__exp.restoreLastPlayed = restoreLastPlayed;
 __exp.restoreTitle = restoreTitle;
 __exp.seekBy = seekBy;
 __exp.setDemo = setDemo;
+__exp.setFilter = setFilter;
+__exp.setMode = setMode;
+__exp.setSort = setSort;
 __exp.togglePlay = togglePlay;
+__exp.toggleSortDir = toggleSortDir;
 __exp.tracks = tracks;
 });
 
@@ -4601,6 +4942,35 @@ function bindControls() {
   dom.btnPlay.addEventListener('click', togglePlay);
   dom.btnPrev.addEventListener('click', () => nextTrack(-1));
   dom.btnNext.addEventListener('click', () => nextTrack(1));
+  dom.btnMode.addEventListener('click', () => playlist.cycleMode());
+
+  /* Playlist tools. Clearing takes two clicks, like deleting a preset: the
+     button next to it adds files, and that is not undoable. */
+  dom.trackFilter.addEventListener('input', () => playlist.setFilter(dom.trackFilter.value));
+  dom.trackSort.addEventListener('change', () => playlist.setSort(dom.trackSort.value));
+  dom.btnSortDir.addEventListener('click', () => playlist.toggleSortDir());
+  let clearArm = 0;
+  const disarmClear = () => {
+    if (!clearArm) return;
+    window.clearTimeout(clearArm);
+    clearArm = 0;
+    dom.btnClear.classList.remove('armed');
+    dom.btnClear.textContent = '清空';
+  };
+  dom.btnClear.addEventListener('click', () => {
+    if (!clearArm) {
+      clearArm = window.setTimeout(disarmClear, 2500);
+      dom.btnClear.classList.add('armed');
+      dom.btnClear.textContent = '确认清空';
+      return;
+    }
+    disarmClear();
+    playlist.clearTracks();
+    toast('列表已清空，磁盘上的文件没动');
+  });
+  /* Closing the tab is the other moment the playhead is worth writing down;
+     timeupdate alone can miss the last few seconds. */
+  window.addEventListener('pagehide', () => playlist.flushPlayhead());
   dom.btnDemo.addEventListener('click', () => {
     const turningOn = !audio.isDemo();
     setDemo(turningOn);
@@ -4685,10 +5055,13 @@ function bindAudioEvents(el) {
     dom.btnPlay.classList.add('playing');
     flags.redraw = true;
   });
-  el.addEventListener('pause', () => dom.btnPlay.classList.remove('playing'));
+  el.addEventListener('pause', () => { dom.btnPlay.classList.remove('playing'); playlist.flushPlayhead(); });
+  el.addEventListener('timeupdate', () => playlist.notePlayhead());
+  el.addEventListener('loadedmetadata', () => playlist.noteDuration());
   el.addEventListener('ended', () => {
     dom.btnPlay.classList.remove('playing');
-    if (tracks.length > 1) nextTrack(1);
+    /* What "ended" means is a playlist decision (顺序 / 单曲 / 随机), not a UI one. */
+    playlist.advance();
   });
   /* Media trouble is exactly what "没声" looks like from the inside, and it is
      invisible while it is happening. Timestamp it into the frame log. */
@@ -4828,6 +5201,7 @@ function onKey(e) {
       break;
     }
     case 'l': togglePanel('panelList'); break;
+    case 'm': case 'M': playlist.cycleMode(); break;
     /* Shift+L rather than plain L: the log is a diagnostic, the playlist is what
        people actually use, and a dead duplicate `case 'l'` was hiding the
        collision until the docs were read against the code. */
@@ -4939,11 +5313,13 @@ const {
 } = presets;
 
 const {
+  initPlaylist,
   loadServerTracks,
   loadTrack,
   play,
   reloadCurrentSource,
   renderPlaylist,
+  restoreLastPlayed,
   setDemo,
   tracks,
 } = playlist;
@@ -5052,6 +5428,7 @@ async function init() {
   audio.setSourceReloader(reloadCurrentSource);
   bindControls();
   initPresets();
+  initPlaylist();
   bindDragDrop();
   syncControlsFromState();
   updatePerfBadge();
@@ -5070,14 +5447,21 @@ async function init() {
   render.setTickHandler(updateTransportUI);
   render.startLoop();
 
+  const params = new URLSearchParams(location.search);
+
   const found = await loadServerTracks();
   if (found) {
-    const first = tracks.findIndex((t) => /oscillo/i.test(t.name));
-    loadTrack(first >= 0 ? first : 0, false);
-    toast(`已找到 ${tracks.length} 个音频文件`);
+    /* ?track= and ?demo= are instructions; the remembered playhead is only the
+       default, so it must not fight an explicit request. */
+    if (!params.has('track') && !params.has('demo') && restoreLastPlayed()) {
+      toast('接着上次的曲目和位置（按空格继续）');
+    } else {
+      const first = tracks.findIndex((t) => /oscillo/i.test(t.name));
+      loadTrack(first >= 0 ? first : 0, false);
+      toast(`已找到 ${tracks.length} 个音频文件`);
+    }
   }
 
-  const params = new URLSearchParams(location.search);
   if (params.has('demo')) {
     setDemo(true);
     if (!S.trigger) { S.trigger = true; syncControlsFromState(); }

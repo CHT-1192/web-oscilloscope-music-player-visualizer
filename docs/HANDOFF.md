@@ -6,7 +6,7 @@
 
 ```bash
 node server.js --open      # http://127.0.0.1:10240（默认端口，-p 改，PORT 环境变量也行）
-node test/verify.js        # 161 项端到端验证；--only=port|http|render|presets|resample|standalone 可只跑一段
+node test/verify.js        # 182 项端到端验证；--only=port|http|render|presets|playlist|resample|standalone 可只跑一段
 node build-standalone.js   # 改完 public/ 后重新生成单文件版
 node test/bench.js         # 性能基准
 ```
@@ -41,7 +41,7 @@ probe.js               音频头解析（WAV/FLAC/AIFF/CAF/MP4/Ogg/MP3），只�
 build-standalone.js    把同一批模块内联成单文件
 test/verify.js         测试入口：分配端口、起服务器、按 key 顺序跑各段
 test/harness.js        断言与计数、HTTP 客户端、起服务器、找 Playwright/Chromium
-test/sections/*.js     161 项按失败方式分段：port、http、render-synth、render（会话驱动）、
+test/sections/*.js     182 项按失败方式分段：port、http、render-synth、render（会话驱动）、
                        render-blanking/halo/model/axes/profile/audio/surface/theme/webgl-absent、
                        presets、resample、standalone；test/bench.js 性能基准
 ```
@@ -102,13 +102,15 @@ E *= exp(-dt/τ)                     dt 取 performance.now() 真实差值，上
 
 只在一条路径上有效的两个滑块会置灰并把原因写进 `title`（`apply.js rendererOnlyRow`）：`残留` 只在 8 位路径，`光晕` 只在 WebGL。`X 反向` / `Y 反向` 是内容属性（素材手性），跟着每首歌记录，翻转时增益读数带负号。
 
+播放列表另有 `localStorage` 的 `scope.playlist.v1`：`{mode, sortKey, sortAsc, last:{name, size, at}}`。`last` 只写服务器能再给一次的文件（拖进来的 `blob:` 文件刷新就没了），按名字加大小匹配，页面加载时恢复成暂停状态，`?track=` / `?demo=` 优先于它。过滤和排序都不写盘，只有排序方式与升降序记。
+
 ## 调试工具
 
 - **帧日志**：`⇧L` 或 `__scope.perf()` / `__scope.perf(60)`。环形 8192 帧（约 2.3 分钟）、200 条事件。给出中位/p90/p99/p99.9/最差、1% 与 0.1% low、超 20/33/50 ms 计数，以及最差几帧的年龄、线段数、光晕开关、是否刚 resize。被浏览器拉长到整秒的帧（隐藏标签页把 rAF 节流到 ~1 Hz）单独计数，并从"去掉被拉长的帧后"的分布里排除。
 - **掉音看门狗**：跑在独立的 250 ms 定时器上（不能挂在 rAF 上，隐藏标签页会把 rAF 节流到 1 Hz，那正好是掉音会藏起来的状态）。它记 `音频时钟落后 X ms`（墙上时间减去 `AudioContext.currentTime`，只在整个音频图真的在渲染时前进，所以掉音不触发任何 DOM 事件也能被抓到）、`信号静默`（在播放但分析器全 0）、`音频上下文` 状态变化、`长任务`（Firefox 的 longtask 条目）、`页面 freeze` / `可见性`。时钟归零会单独报成"音频上下文重建（换采样率）"，不是掉音。
 - **`window.__scope`**：`state`、`perf(n)`、`readTrace(x,y,w,h)`、`readAnalyser()`、`setRateMode()`。
 - **URL**：`?renderer=2d`、`?demo=1`、`?track=N`、`?play=1`。
-- 键盘：空格、方向键、`,` `.`、`D`、`F`、`S`、`L`、`P`、`⇧L`、`B`、`T`、`G`、`O`、`R`、`Esc`。这些曾经全是死的（`onKey` 拆模块时没被绑定），现在有测试盯着。
+- 键盘：空格、方向键、`,` `.`、`D`、`F`、`S`、`L`、`M`、`P`、`⇧L`、`B`、`T`、`G`、`O`、`R`、`Esc`。这些曾经全是死的（`onKey` 拆模块时没被绑定），现在有测试盯着。
 
 ## 这轮修掉的 bug（症状 → 原因 → 处理）
 
@@ -126,6 +128,7 @@ E *= exp(-dt/τ)                     dt 取 performance.now() 真实差值，上
 | `L` 既是播放列表又是帧日志（代码里有两个 `case 'l'`） | 文档与代码不一致 | 以文档为准：`L` 播放列表，`⇧L` 帧日志 |
 | 拆模块后启动即报 `rafId is not defined` | 循环状态被当成 trace 状态一起搬走 | 搬回去 |
 | 2D 路径残留擦除失效 | 暂停路径调了 `fadeStep()` 却丢掉返回的 alpha | 拆成 `requestWipe()` 与 `fadeStep()` |
+| 播放位置记不住（刷新后回到 0） | 节流的哨兵值写成 0："距上次写入" 在页面打开不足 5 秒时永远小于阈值，连 pause 的强制写入都被吞掉 | 哨兵改成 `-Infinity`，`flushPlayhead()` 才真的绕过节流；测试里就是刷新后立即暂停这个场景抓到它的 |
 
 ## 参考素材教了什么
 
@@ -151,7 +154,7 @@ E *= exp(-dt/τ)                     dt 取 performance.now() 真实差值，上
 - 界面文案简短；文档不要"AI 味"：不加粗强调、不用引用块、不拿破折号当标点、不写"不是 X 而是 Y"。
 - 控件不许撒谎：拖得动就必须有用；只在一条路径上有效的会置灰并写明原因；读数要显示真正在用的值。
 - 长命令放后台跑（前台超时被 SIGTERM 会连带把同一会话里的进程一起带走，曾经把用户正在跑的服务器杀过）。不要 `pkill -f "node server.js"`，测试自己抢空闲端口。
-- 别留半成品；改完随手跑对应测试段，提交前跑全量（161 项）。
+- 别留半成品；改完随手跑对应测试段，提交前跑全量（182 项）。
 - 大于 300 行的文件考虑拆，拆分依据是失败方式而不是行数。
 
 ## 环境

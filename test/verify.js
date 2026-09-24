@@ -25,9 +25,14 @@ const { httpTests } = require('./sections/http.js');
 const { renderTests } = require('./sections/render.js');
 const { webglAbsentTest } = require('./sections/render-webgl-absent.js');
 const { presetTests } = require('./sections/presets.js');
+const { playlistTests } = require('./sections/playlist.js');
 const { resampleTests } = require('./sections/resample.js');
 const { standaloneTests } = require('./sections/standalone.js');
 
+/* `--only=presets` runs just the sections whose key matches, so iterating on one
+   feature costs seconds instead of a full pass. Section keys: port, http,
+   render, presets, playlist, resample, standalone. A filtered run says so in the
+   summary — a partial result must never pass itself off as a full one. */
 const ONLY = (() => {
   const eq = process.argv.find((a) => a.startsWith('--only='));
   const i = process.argv.indexOf('--only');
@@ -51,7 +56,7 @@ const wants = (key) => !ONLY || key.includes(ONLY) || ONLY.includes(key);
     }
     if (wants('http')) await httpTests();
 
-    const browser = ['render', 'presets', 'resample', 'standalone'].filter(wants);
+    const browser = ['render', 'presets', 'playlist', 'resample', 'standalone'].filter(wants);
     const pw = browser.length ? loadPlaywright() : null;
     if (browser.length && !pw) {
       section('Render layer');
@@ -64,6 +69,7 @@ const wants = (key) => !ONLY || key.includes(ONLY) || ONLY.includes(key);
         await webglAbsentTest(pw);
       }
       if (wants('presets')) await presetTests(pw);
+      if (wants('playlist')) await playlistTests(pw);
       if (wants('resample')) await resampleTests(pw);
       if (wants('standalone')) await standaloneTests(pw);
     }

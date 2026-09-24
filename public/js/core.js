@@ -116,6 +116,8 @@ const dom = {
   modelBadge: $('modelBadge'),
   panelSettings: $('panelSettings'), panelList: $('panelList'),
   trackList: $('trackList'), listCount: $('listCount'),
+  trackFilter: $('trackFilter'), trackSort: $('trackSort'),
+  btnSortDir: $('btnSortDir'), btnClear: $('btnClear'), btnMode: $('btnMode'),
   fileInput: $('fileInput'), toast: $('toast'), swatches: $('swatches'),
   presetMode: $('presetMode'), presetChips: $('presetChips'), presetStatus: $('presetStatus'),
   presetRow: $('presetRow'), presetName: $('presetName'), presetText: $('presetText'),

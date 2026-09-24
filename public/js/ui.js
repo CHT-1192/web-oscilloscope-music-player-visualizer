@@ -143,6 +143,35 @@ function bindControls() {
   dom.btnPlay.addEventListener('click', togglePlay);
   dom.btnPrev.addEventListener('click', () => nextTrack(-1));
   dom.btnNext.addEventListener('click', () => nextTrack(1));
+  dom.btnMode.addEventListener('click', () => playlist.cycleMode());
+
+  /* Playlist tools. Clearing takes two clicks, like deleting a preset: the
+     button next to it adds files, and that is not undoable. */
+  dom.trackFilter.addEventListener('input', () => playlist.setFilter(dom.trackFilter.value));
+  dom.trackSort.addEventListener('change', () => playlist.setSort(dom.trackSort.value));
+  dom.btnSortDir.addEventListener('click', () => playlist.toggleSortDir());
+  let clearArm = 0;
+  const disarmClear = () => {
+    if (!clearArm) return;
+    window.clearTimeout(clearArm);
+    clearArm = 0;
+    dom.btnClear.classList.remove('armed');
+    dom.btnClear.textContent = '清空';
+  };
+  dom.btnClear.addEventListener('click', () => {
+    if (!clearArm) {
+      clearArm = window.setTimeout(disarmClear, 2500);
+      dom.btnClear.classList.add('armed');
+      dom.btnClear.textContent = '确认清空';
+      return;
+    }
+    disarmClear();
+    playlist.clearTracks();
+    toast('列表已清空，磁盘上的文件没动');
+  });
+  /* Closing the tab is the other moment the playhead is worth writing down;
+     timeupdate alone can miss the last few seconds. */
+  window.addEventListener('pagehide', () => playlist.flushPlayhead());
   dom.btnDemo.addEventListener('click', () => {
     const turningOn = !audio.isDemo();
     setDemo(turningOn);
@@ -227,10 +256,13 @@ function bindAudioEvents(el) {
     dom.btnPlay.classList.add('playing');
     flags.redraw = true;
   });
-  el.addEventListener('pause', () => dom.btnPlay.classList.remove('playing'));
+  el.addEventListener('pause', () => { dom.btnPlay.classList.remove('playing'); playlist.flushPlayhead(); });
+  el.addEventListener('timeupdate', () => playlist.notePlayhead());
+  el.addEventListener('loadedmetadata', () => playlist.noteDuration());
   el.addEventListener('ended', () => {
     dom.btnPlay.classList.remove('playing');
-    if (tracks.length > 1) nextTrack(1);
+    /* What "ended" means is a playlist decision (顺序 / 单曲 / 随机), not a UI one. */
+    playlist.advance();
   });
   /* Media trouble is exactly what "没声" looks like from the inside, and it is
      invisible while it is happening. Timestamp it into the frame log. */
@@ -370,6 +402,7 @@ function onKey(e) {
       break;
     }
     case 'l': togglePanel('panelList'); break;
+    case 'm': case 'M': playlist.cycleMode(); break;
     /* Shift+L rather than plain L: the log is a diagnostic, the playlist is what
        people actually use, and a dead duplicate `case 'l'` was hiding the
        collision until the docs were read against the code. */

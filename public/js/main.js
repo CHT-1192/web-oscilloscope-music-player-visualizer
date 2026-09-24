@@ -15,11 +15,13 @@ const {
 } = presets;
 
 const {
+  initPlaylist,
   loadServerTracks,
   loadTrack,
   play,
   reloadCurrentSource,
   renderPlaylist,
+  restoreLastPlayed,
   setDemo,
   tracks,
 } = playlist;
@@ -128,6 +130,7 @@ async function init() {
   audio.setSourceReloader(reloadCurrentSource);
   bindControls();
   initPresets();
+  initPlaylist();
   bindDragDrop();
   syncControlsFromState();
   updatePerfBadge();
@@ -146,14 +149,21 @@ async function init() {
   render.setTickHandler(updateTransportUI);
   render.startLoop();
 
+  const params = new URLSearchParams(location.search);
+
   const found = await loadServerTracks();
   if (found) {
-    const first = tracks.findIndex((t) => /oscillo/i.test(t.name));
-    loadTrack(first >= 0 ? first : 0, false);
-    toast(`已找到 ${tracks.length} 个音频文件`);
+    /* ?track= and ?demo= are instructions; the remembered playhead is only the
+       default, so it must not fight an explicit request. */
+    if (!params.has('track') && !params.has('demo') && restoreLastPlayed()) {
+      toast('接着上次的曲目和位置（按空格继续）');
+    } else {
+      const first = tracks.findIndex((t) => /oscillo/i.test(t.name));
+      loadTrack(first >= 0 ? first : 0, false);
+      toast(`已找到 ${tracks.length} 个音频文件`);
+    }
   }
 
-  const params = new URLSearchParams(location.search);
   if (params.has('demo')) {
     setDemo(true);
     if (!S.trigger) { S.trigger = true; syncControlsFromState(); }

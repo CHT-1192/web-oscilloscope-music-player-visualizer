@@ -34,9 +34,203 @@ const {
 /** Stable identity: this array is exported, so it is never reassigned. */
 const tracks = [];
 let curIndex = -1;
+
+/* -------------------------------------------------- list state, remembered */
+/* Sort order, play mode, and where the listener was. Persisted, because a list
+   that forgets how you sorted it is a list you sort again every visit. The audio
+   position is only restored for a file the server can hand out again: a dropped
+   file's blob: URL dies with the tab. */
+const STORE = 'scope.playlist.v1';
+const MODES = ['sequence', 'one', 'shuffle'];
+const MODE_LABEL = { sequence: '顺序', one: '单曲循环', shuffle: '随机' };
+const SORT_LABEL = { name: '名称', duration: '时长', rate: '采样率', size: '大小' };
+const prefs = { mode: 'sequence', sortKey: 'name', sortAsc: true, last: null };
+let filter = '';
+/* -Infinity, not 0: the throttle is "now minus the last write", and a page that
+   has been alive for less than five seconds would otherwise swallow its own first
+   write — including the flush on pause, which is the one that matters most. */
+let playheadSavedAt = -Infinity;
+
+function readPrefs() {
+  try {
+    const raw = window.localStorage.getItem(STORE);
+    if (raw) Object.assign(prefs, JSON.parse(raw));
+  } catch (err) { /* private mode, file://, or a hand-edited value */ }
+  if (!MODES.includes(prefs.mode)) prefs.mode = 'sequence';
+  if (!SORT_LABEL[prefs.sortKey]) prefs.sortKey = 'name';
+  prefs.sortAsc = prefs.sortAsc !== false;
+}
+function savePrefs() {
+  try { window.localStorage.setItem(STORE, JSON.stringify(prefs)); } catch (err) { /* ignore */ }
+}
+/** Name, format, codec and the meta line, so "44.1" finds the CD-rate files and
+    "flac" finds the FLACs without a second syntax to learn. */
+const searchable = (t) => `${t.name} ${t.format || ''} ${t.codec || ''} ${t.meta || ''}`.toLowerCase();
+
+/** Compare two tracks for the current sort key. A value nobody knows (a dropped
+    file whose metadata has not loaded yet) sorts last in either direction, rather
+    than pretending to be zero seconds. */
+function compareTracks(a, b) {
+  const unknown = (v) => !v;
+  if (prefs.sortKey === 'duration' || prefs.sortKey === 'rate' || prefs.sortKey === 'size') {
+    const key = prefs.sortKey === 'rate' ? 'sampleRate' : prefs.sortKey;
+    const av = a[key], bv = b[key];
+    if (unknown(av) !== unknown(bv)) return unknown(av) ? 1 : -1;
+    if ((av || 0) !== (bv || 0)) return (av || 0) - (bv || 0);
+  }
+  return a.name.localeCompare(b.name, undefined, { numeric: true });
+}
+/** Reorder in place, so every index stays meaningful. curIndex is remapped by
+    identity, not by arithmetic — that is the part that breaks when the list is
+    re-sorted under a playing track. */
+function sortTracks() {
+  const cur = tracks[curIndex];
+  const dir = prefs.sortAsc ? 1 : -1;
+  tracks.sort((a, b) => (dir * compareTracks(a, b))
+    || a.name.localeCompare(b.name, undefined, { numeric: true }));
+  curIndex = cur ? tracks.indexOf(cur) : -1;
+}
+function setSort(key) {
+  if (!SORT_LABEL[key] || key === prefs.sortKey) return;
+  prefs.sortKey = key;
+  savePrefs();
+  sortTracks();
+  renderPlaylist();
+}
+function toggleSortDir() {
+  prefs.sortAsc = !prefs.sortAsc;
+  savePrefs();
+  sortTracks();
+  renderPlaylist();
+}
+function setFilter(text) {
+  filter = String(text == null ? '' : text);
+  renderPlaylist();
+}
+function setMode(m) {
+  if (!MODES.includes(m)) return;
+  prefs.mode = m;
+  savePrefs();
+  renderListTools();
+}
+function cycleMode() {
+  setMode(MODES[(MODES.indexOf(prefs.mode) + 1) % MODES.length]);
+  toast(`播放模式：${MODE_LABEL[prefs.mode]}`);
+}
+/** What "the track ended" means, per mode. ui.js calls this from its <audio>
+    listeners, because the element is rebuilt whenever the engine changes. */
+function advance() {
+  if (audio.isDemo()) return;
+  if (prefs.mode === 'one') { dom.audio.currentTime = 0; play(); return; }
+  if (prefs.mode === 'shuffle' && tracks.length > 1) {
+    let i = curIndex;
+    while (i === curIndex) i = Math.floor(Math.random() * tracks.length);
+    loadTrack(i, true);
+    return;
+  }
+  if (tracks.length > 1) nextTrack(1);   // 顺序 with one track stops, by design
+}
+/** Remember the playhead for the next visit. Called on timeupdate, so it is
+    throttled: a write per frame would be a write per frame. */
+function notePlayhead() {
+  const t = tracks[curIndex];
+  if (!t || t.blob || audio.isDemo()) return;
+  const now = performance.now();
+  if (now - playheadSavedAt < 5000) return;
+  playheadSavedAt = now;
+  const at = dom.audio.currentTime;
+  if (!Number.isFinite(at) || at < 1) return;
+  prefs.last = { name: t.name, size: t.size || 0, at };
+  savePrefs();
+}
+/** The same thing without the throttle, for pause and for leaving the page. */
+function flushPlayhead() {
+  playheadSavedAt = -Infinity;
+  notePlayhead();
+}
+function noteDuration() {
+  const t = tracks[curIndex];
+  if (!t || t.duration) return;
+  const d = dom.audio.duration;
+  if (!Number.isFinite(d) || d <= 0) return;
+  t.duration = d;
+  if (prefs.sortKey === 'duration') { sortTracks(); renderPlaylist(); }
+}
+/** Same track, same place, but not playing: a page that starts making noise by
+    itself is a page people close. `?play=1` and ▶ start it from there. */
+function restoreLastPlayed() {
+  const last = prefs.last;
+  if (!last || !last.name) return false;
+  const i = tracks.findIndex((t) => t.name === last.name && (!last.size || !t.size || t.size === last.size));
+  if (i < 0) return false;
+  loadTrack(i, false);
+  if (last.at > 1) {
+    const seek = () => {
+      dom.audio.removeEventListener('loadedmetadata', seek);
+      try { dom.audio.currentTime = last.at; } catch (err) { /* ignore */ }
+      flags.redraw = true;
+    };
+    dom.audio.addEventListener('loadedmetadata', seek);
+  }
+  return true;
+}
+/** Stop and unload, without touching the list — used when the row you removed
+    was the one playing. */
+function stopSource() {
+  dom.audio.pause();
+  dom.audio.removeAttribute('src');
+  dom.audio.load();
+  curIndex = -1;
+  presets.setTrackKey(null, null);
+  render.resetTraceState();
+  restoreTitle();
+}
+function removeTrack(i) {
+  const t = tracks[i];
+  if (!t) return;
+  const wasCurrent = i === curIndex;
+  if (t.blob && t.url) { try { URL.revokeObjectURL(t.url); } catch (err) { /* already gone */ } }
+  tracks.splice(i, 1);
+  if (wasCurrent) stopSource();
+  else if (i < curIndex) curIndex--;
+  if (prefs.last && prefs.last.name === t.name) { prefs.last = null; savePrefs(); }
+  renderPlaylist();
+}
+function clearTracks() {
+  for (const t of tracks) {
+    if (t.blob && t.url) { try { URL.revokeObjectURL(t.url); } catch (err) { /* already gone */ } }
+  }
+  tracks.length = 0;
+  prefs.last = null;
+  savePrefs();
+  stopSource();
+  renderPlaylist();
+}
+/** The tools row has to say what will happen next (ascending or descending, which
+    mode), not just what the value is. */
+function renderListTools() {
+  if (dom.trackFilter && dom.trackFilter.value !== filter) dom.trackFilter.value = filter;
+  if (dom.trackSort) dom.trackSort.value = prefs.sortKey;
+  if (dom.btnSortDir) {
+    dom.btnSortDir.textContent = prefs.sortAsc ? '↑' : '↓';
+    dom.btnSortDir.setAttribute('aria-pressed', prefs.sortAsc ? 'false' : 'true');
+    dom.btnSortDir.title = `按${SORT_LABEL[prefs.sortKey]}${prefs.sortAsc ? '升序' : '降序'}（点一下切${prefs.sortAsc ? '降' : '升'}序）`;
+  }
+  if (dom.btnMode) {
+    dom.btnMode.dataset.mode = prefs.mode;
+    dom.btnMode.title = `播放模式：${MODE_LABEL[prefs.mode]}（M 或点我切换）`;
+    dom.btnMode.setAttribute('aria-label', `播放模式：${MODE_LABEL[prefs.mode]}`);
+  }
+  if (dom.btnClear) dom.btnClear.disabled = !tracks.length;
+}
+function initPlaylist() {
+  readPrefs();
+  renderListTools();
+}
 function renderPlaylist() {
   const ul = dom.trackList;
   ul.textContent = '';
+  const q = filter.trim().toLowerCase();
   if (!tracks.length) {
     const li = document.createElement('li');
     li.className = 'empty-note';
@@ -46,9 +240,19 @@ function renderPlaylist() {
     li.style.whiteSpace = 'pre-line';
     ul.appendChild(li);
     dom.listCount.textContent = '';
+    renderListTools();
     return;
   }
-  tracks.forEach((t, i) => {
+  const rows = [];
+  tracks.forEach((t, i) => { if (!q || searchable(t).includes(q)) rows.push(i); });
+  if (!rows.length) {
+    const li = document.createElement('li');
+    li.className = 'empty-note';
+    li.textContent = `没有匹配「${filter.trim()}」的曲目`;
+    ul.appendChild(li);
+  }
+  for (const i of rows) {
+    const t = tracks[i];
     const li = document.createElement('li');
     li.className = 'track' + (i === curIndex ? ' active' : '');
     const n = document.createElement('span');
@@ -60,11 +264,21 @@ function renderPlaylist() {
     const meta = document.createElement('span');
     meta.className = 'meta';
     meta.textContent = t.meta || '';
-    li.append(n, name, meta);
+    const rm = document.createElement('button');
+    rm.type = 'button';
+    rm.className = 'rm';
+    rm.textContent = '✕';
+    rm.title = t.blob
+      ? '从列表里移除'
+      : '从列表里移除（刷新后会重新扫到磁盘上的文件）';
+    rm.setAttribute('aria-label', `移除 ${t.name}`);
+    rm.addEventListener('click', (e) => { e.stopPropagation(); removeTrack(i); });
+    li.append(n, name, meta, rm);
     li.addEventListener('click', () => loadTrack(i, true));
     ul.appendChild(li);
-  });
-  dom.listCount.textContent = `(${tracks.length})`;
+  }
+  dom.listCount.textContent = q ? `(${rows.length}/${tracks.length})` : `(${tracks.length})`;
+  renderListTools();
 }
 async function loadServerTracks() {
   if (location.protocol === 'file:') return false;
@@ -80,6 +294,9 @@ async function loadServerTracks() {
       name: t.name,
       url: t.url,
       blob: false,
+      size: t.size || 0,
+      duration: t.duration || 0,
+      format: t.format || null,
       sampleRate: t.sampleRate || 0,
       codec: t.codec || null,
       meta: [
@@ -94,6 +311,7 @@ async function loadServerTracks() {
     }));
     tracks.length = 0;
     tracks.push(...listed);
+    sortTracks();
     renderPlaylist();
     return true;
   } catch (err) {
@@ -328,20 +546,25 @@ async function addLocalFiles(files) {
   const list = Array.from(files).filter((f) => /^audio\//.test(f.type) || AUDIO_RE.test(f.name));
   if (!list.length) { toast('没有识别到音频文件'); return; }
   setDemo(false);
-  const first = tracks.length;
   for (const f of list) {
     const info = await probeNativeRate(f);
     tracks.push({
       name: f.name,
       url: URL.createObjectURL(f),
       blob: true,
+      size: f.size || 0,
+      duration: 0,             // filled in when the element reports loadedmetadata
+      format: (info && info.format) || null,
       sampleRate: info && info.rate ? info.rate : 0,
       codec: (info && info.codec) || null,
       meta: describeAudio(info, f.size),
     });
   }
+  sortTracks();
   renderPlaylist();
-  loadTrack(first, true);
+  /* The sort may have moved the files just added, so find the one to play by
+     identity rather than by the index it would have had unsorted. */
+  loadTrack(tracks.findIndex((t) => t.blob && t.name === list[0].name), true);
 }
 /** Rebuild the <audio> element around the engine change and restore where the
     listener was. audio.js drives this because it owns the graph; knowing which
@@ -454,19 +677,33 @@ function restoreTitle() {
 
 export {
   AUDIO_RE,
+  advance,
   currentTrack,
   addLocalFiles,
+  clearTracks,
+  cycleMode,
   describeAudio,
+  flushPlayhead,
+  initPlaylist,
   loadServerTracks,
   loadTrack,
   nextTrack,
+  noteDuration,
+  notePlayhead,
   play,
   probeNativeRate,
   reloadCurrentSource,
+  removeTrack,
+  renderListTools,
   renderPlaylist,
+  restoreLastPlayed,
   restoreTitle,
   seekBy,
   setDemo,
+  setFilter,
+  setMode,
+  setSort,
   togglePlay,
+  toggleSortDir,
   tracks,
 };

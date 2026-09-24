@@ -266,6 +266,16 @@ body.dragging::after {
 .btn.play.playing .i-play { display: none; }
 .btn.play.playing .i-pause { display: block; }
 .btn.on { border-color: var(--accent); color: var(--accent); }
+/* Play mode: one button, three states, so the icon is what changes. The mode
+   shows in the transport rather than in the list panel because it is a property
+   of playback, not of the list — and 单曲 / 随机 have to be visible while the
+   panel is closed. */
+.btn.mode svg { width: 16px; height: 16px; }
+.btn.mode .i-seq, .btn.mode .i-one, .btn.mode .i-rnd { display: none; }
+.btn.mode[data-mode="sequence"] .i-seq { display: block; }
+.btn.mode[data-mode="one"] .i-one { display: block; }
+.btn.mode[data-mode="shuffle"] .i-rnd { display: block; }
+.btn.mode[data-mode="one"], .btn.mode[data-mode="shuffle"] { border-color: var(--accent); color: var(--accent); }
 
 .vol { display: flex; align-items: center; gap: 7px; padding-left: 4px; }
 .vol svg { width: 16px; height: 16px; fill: var(--muted); flex: none; }
@@ -518,6 +528,11 @@ input[type="range"]::-moz-range-thumb {
   transition: all 0.16s;
 }
 .ghost:hover { border-color: var(--edge-strong); color: #e2eeeb; }
+.ghost:disabled { opacity: 0.4; cursor: default; }
+.ghost:disabled:hover { border-color: var(--edge); color: #94a7a4; }
+/* Two clicks, like deleting a preset: clearing the list is one slip away from
+   the button next to it, and "添加本地文件" is not undoable. */
+.ghost.armed { border-color: #ff6b8a; color: #ff6b8a; }
 
 /* ── presets ──────────────────────────────────────────────────────────── */
 
@@ -612,6 +627,57 @@ input[type="range"]::-moz-range-thumb {
 
 /* ── playlist ─────────────────────────────────────────────────────────── */
 
+.list-tools {
+  flex: none;
+  display: flex;
+  gap: 6px;
+  padding: 9px 11px 10px;
+  border-bottom: 1px solid var(--edge);
+}
+.list-tools .filter {
+  flex: 1 1 auto;
+  min-width: 0;
+  appearance: none;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--edge);
+  border-radius: 9px;
+  color: #d3e2de;
+  font: inherit;
+  font-size: 12px;
+  height: 30px;
+  padding: 0 9px;
+}
+.list-tools .filter::placeholder { color: var(--muted-dim); }
+.list-tools .filter:focus { outline: none; border-color: var(--accent); }
+.list-tools select {
+  appearance: none;
+  flex: none;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--edge);
+  border-radius: 9px;
+  color: #c3d4d0;
+  font: inherit;
+  font-size: 12px;
+  height: 30px;
+  padding: 0 6px;
+  cursor: pointer;
+}
+.mini {
+  appearance: none;
+  flex: none;
+  width: 30px;
+  border: 1px solid var(--edge);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.03);
+  color: #c3d4d0;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.list-tools select:hover, .mini:hover { border-color: var(--edge-strong); }
+.mini[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+
 .tracks {
   list-style: none;
   margin: 0;
@@ -621,8 +687,8 @@ input[type="range"]::-moz-range-thumb {
 }
 .track {
   display: grid;
-  grid-template-columns: 24px 1fr;
-  grid-template-areas: "n name" "n meta";
+  grid-template-columns: 24px 1fr auto;
+  grid-template-areas: "n name rm" "n meta rm";
   gap: 1px 8px;
   padding: 9px 10px;
   border-radius: 9px;
@@ -632,6 +698,25 @@ input[type="range"]::-moz-range-thumb {
 }
 .track:hover { background: rgba(255, 255, 255, 0.045); }
 .track.active { border-color: var(--accent); background: var(--accent-wash); }
+.track .rm {
+  grid-area: rm;
+  align-self: center;
+  appearance: none;
+  border: 0;
+  background: none;
+  color: var(--muted-dim);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  padding: 4px 2px 4px 6px;
+  cursor: pointer;
+  /* Always reachable, dim until you are on the row: hiding it entirely makes it
+     unreachable on a touch screen, where there is no hover. */
+  opacity: 0.3;
+  transition: opacity 0.14s, color 0.14s;
+}
+.track:hover .rm, .track .rm:focus-visible { opacity: 1; }
+.track .rm:hover { color: #ff6b8a; }
 .track .n {
   grid-area: n;
   font-family: var(--mono);
