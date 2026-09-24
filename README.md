@@ -26,25 +26,27 @@ E *= exp(-dt/τ)                      按真实经过的时间衰减
 
 *Oscillofun @22.5s，默认配方，光晕 55%，两边只有渲染器不同。左边那层包住图形的雾是 halation；右边笔画更硬，因为十级 alpha 阶梯到顶就没有余量了。*
 
-没有 WebGL2，或者拿不到浮点渲染目标时，退回 Canvas 2D（`?renderer=2d` 可以强制）。两条路径跑同一套 159 项检查：渲染组整体跑两遍，再加一次 `--disable-webgl` 的强制回退。回退路径做不到的事在上面写明了。
+没有 WebGL2，或者拿不到浮点渲染目标时，退回 Canvas 2D（`?renderer=2d` 可以强制）。两条路径跑同一套 161 项检查：渲染组整体跑两遍，再加一次 `--disable-webgl` 的强制回退。回退路径做不到的事在上面写明了。
 
 启动时先在临时画布上画一段再读回来，确认真的画出了东西，才把真画布交给 WebGL。画布一辈子只发一种上下文，选错没有退路；有驱动会宣称支持浮点渲染目标却丢掉每一次绘制。
 
 ## 跑起来
 
-| | 服务器版 | 单文件版 |
-|---|---|---|
-| 入口 | `server.js` + `public/` | `oscilloscope-standalone.html` |
-| 启动 | `node server.js` | 双击打开 |
-| 音频 | 自动列出项目目录，也支持拖拽和选择 | 拖拽或选择文件 |
-| 适合 | 日常用、局域网共享、大文件流式播放 | 拷给别人、离线演示 |
+| | 服务器版 | 单文件版 | 在线版 |
+|---|---|---|---|
+| 入口 | `server.js` + `public/` | `oscilloscope-standalone.html` | GitHub Pages |
+| 启动 | `node server.js` | 双击打开 | [打开](https://cht-1192.github.io/web-oscilloscope-music-player-visualizer/) |
+| 音频 | 自动列出项目目录，也支持拖拽和选择 | 拖拽或选择文件 | 拖拽或选择文件 |
+| 适合 | 日常用、局域网共享、大文件流式播放 | 拷给别人、离线演示 | 发个链接给别人看一眼 |
+
+在线版是每次推送到 `main` 由 Actions 构建发布的（`.github/workflows/pages.yml`），根目录是模块版，`/standalone.html` 是同一批源码拼出来的单文件版。它没有服务端，所以 `/api/tracks` 不存在，进来时播放列表是空的，音频得自己拖进去；只想看画面就加 `?demo=1`。
 
 零依赖，不需要 `npm install`。
 
 ```bash
 node server.js --open      # http://127.0.0.1:10240
 node server.js -p 8080     # 换端口；被占用会自动 +1 重试，也可以用环境变量 PORT
-node test/verify.js        # 159 项端到端验证
+node test/verify.js        # 161 项端到端验证
 node test/bench.js         # 性能基准
 node build-standalone.js   # 改完 public/ 之后重新生成单文件版
 ```
@@ -157,7 +159,7 @@ public/js/main.js               接线与 init
 build-standalone.js             把同一批源码内联成单文件
 test/verify.js                  测试入口：分配端口、起服务器、按顺序跑各段
 test/harness.js                 断言与计数、HTTP 客户端、起服务器、找浏览器
-test/sections/*.js              159 项按失败方式分段：port、http、render-*、presets、resample、standalone
+test/sections/*.js              161 项按失败方式分段：port、http、render-*、presets、resample、standalone
 test/bench.js                   性能基准
 ```
 

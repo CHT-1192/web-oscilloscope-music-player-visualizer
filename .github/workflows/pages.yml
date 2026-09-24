@@ -1,0 +1,71 @@
+# 把构建产物发布到 GitHub Pages —— 每次推送到 main 自动跑一遍。
+#
+# 结构与 2D-Ray-Trace-Demo 那份一致（build → upload → deploy），差别在构建步骤：
+# 这个项目零依赖，所以没有 npm ci，也没有 lockfile，唯一的一步是
+# build-standalone.js —— 它顺带就是内联器的静态检查，方言写错会直接让 CI 红。
+#
+# 站点是纯静态的，两份都发：
+#   /               public/ 的模块版，资源全是相对路径，子目录下也能直接跑
+#   /standalone.html 单文件版，就是 README 里那份「双击打开」的产物
+#
+# 没有服务端，所以 /api/tracks 与 /media/ 不存在：进来时播放列表是空的，
+# 音频要自己拖进去（或点下面的选择按钮），想看画面不看音频就加 ?demo=1。
+#
+# 发布地址：https://cht-1192.github.io/Web-Oscilloscope-Music-Player-Visualizer/
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# GITHUB_TOKEN 的最小权限：读仓库、写 Pages、申请 id-token 走 OIDC 发布
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同一时刻只允许一个发布在跑；排队中的旧任务直接取消，但不打断正在进行的发布
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          # 故意不写 cache: npm —— 本项目零依赖，仓库里也没有 package-lock.json，
+          # setup-node 找不到锁文件会直接报错。
+
+      - name: 构建单文件版
+        run: node build-standalone.js
+
+      # 页面本身没有路由，404.html 只在有人手滑敲错地址时兜底回首页
+      - name: 组装站点
+        run: |
+          mkdir -p dist
+          cp -R public/. dist/
+          cp oscilloscope-standalone.html dist/standalone.html
+          touch dist/.nojekyll          # 关掉 Jekyll，避免下划线开头的文件被吃掉
+          cp dist/index.html dist/404.html
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
