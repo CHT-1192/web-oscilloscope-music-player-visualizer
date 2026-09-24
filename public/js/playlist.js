@@ -69,7 +69,10 @@ function renderPlaylist() {
 async function loadServerTracks() {
   if (location.protocol === 'file:') return false;
   try {
-    const res = await fetch('/api/tracks', { cache: 'no-store' });
+    /* Relative, not '/api/tracks': under GitHub Pages this app is served from a
+       subpath (/<repo>/), and a leading slash asks the domain root instead — which
+       is where the 404 came from on the deployed copy. */
+    const res = await fetch('api/tracks', { cache: 'no-store' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     if (!Array.isArray(data.tracks) || !data.tracks.length) return false;
