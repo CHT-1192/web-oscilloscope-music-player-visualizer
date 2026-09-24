@@ -395,7 +395,14 @@ input[type="range"]::-moz-range-thumb {
 .x:hover { color: #fff; }
 
 .panel-body { overflow-y: auto; padding: 4px 14px 18px; }
-.panel-foot { flex: none; padding: 11px 14px; border-top: 1px solid var(--edge); }
+.panel-foot {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 11px 14px;
+  border-top: 1px solid var(--edge);
+}
 
 .group { padding: 14px 0 4px; border-bottom: 1px solid rgba(150, 210, 195, 0.08); }
 .group:last-child { border-bottom: 0; }
@@ -531,8 +538,17 @@ input[type="range"]::-moz-range-thumb {
 .ghost:disabled { opacity: 0.4; cursor: default; }
 .ghost:disabled:hover { border-color: var(--edge); color: #94a7a4; }
 /* Two clicks, like deleting a preset: clearing the list is one slip away from
-   the button next to it, and "添加本地文件" is not undoable. */
+   the button next to it, and "添加本地文件" is not undoable.
+   The colour is the one the preset delete arms with (#ff6b8a), because a control
+   that removes things must not look like the one beside it that adds them. */
+.ghost.danger { color: #ff6b8a; border-color: rgba(255, 107, 138, 0.35); }
+.ghost.danger:hover { color: #ff8fa5; border-color: rgba(255, 107, 138, 0.6); }
 .ghost.armed { border-color: #ff6b8a; color: #ff6b8a; }
+.ghost.danger.armed {
+  border-color: rgba(255, 107, 138, 0.6);
+  color: #ff6b8a;
+  background: rgba(255, 107, 138, 0.08);
+}
 
 /* ── presets ──────────────────────────────────────────────────────────── */
 
