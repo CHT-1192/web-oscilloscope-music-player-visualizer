@@ -88,22 +88,37 @@ async function audio(ctx) {
   } else {
     bad('音量 0 does not silence the scope', JSON.stringify({ before0, ...atZero }));
   }
-  /* The other half: a muted element (which is what a browser tab mute does) is
-     still silent, and the app has to say so rather than draw an empty screen.
-     The watchdog counts 100 ms per 250 ms tick, so 1.2 s of silence is ~3 s of
-     wall clock — poll for the notice instead of guessing. */
-  await page.evaluate(() => { document.getElementById('audio').muted = true; });
-  let notice = { text: '' };
-  for (let i = 0; i < 30; i++) {
-    await page.waitForTimeout(250);
-    notice = await page.evaluate(() => ({ text: document.getElementById('toast').textContent }));
-    if (/没有信号/.test(notice.text)) break;
-  }
-  await page.evaluate(() => { document.getElementById('audio').muted = false; });
-  if (/没有信号/.test(notice.text) && /静音/.test(notice.text)) {
-    ok('a muted element is reported, not drawn as an empty screen', notice.text);
+  /* The other half: an element silenced from outside (which is what a browser
+     tab mute is) is still silent, and the app has to say so rather than draw an
+     empty screen. Both shapes count, because which one the browser writes is not
+     something the page gets to choose. The watchdog counts 100 ms per 250 ms
+     tick, so 1.2 s of silence is ~3 s of wall clock — poll, do not guess. */
+  const noticeAfter = async (silence) => {
+    await page.evaluate(silence, null);
+    let text = '';
+    for (let i = 0; i < 30; i++) {
+      await page.waitForTimeout(250);
+      text = await page.evaluate(() => document.getElementById('toast').textContent);
+      if (/没有信号/.test(text)) break;
+    }
+    await page.evaluate(() => {
+      const a = document.getElementById('audio');
+      a.muted = false;
+      a.volume = 1;
+    });
+    return text;
+  };
+  const mutedText = await noticeAfter(() => { document.getElementById('audio').muted = true; });
+  if (/没有信号/.test(mutedText) && /静音/.test(mutedText)) {
+    ok('a muted element is reported, not drawn as an empty screen', mutedText);
   } else {
-    bad('a muted element is reported, not drawn as an empty screen', JSON.stringify(notice));
+    bad('a muted element is reported, not drawn as an empty screen', mutedText);
+  }
+  const zeroVolText = await noticeAfter(() => { document.getElementById('audio').volume = 0; });
+  if (/没有信号/.test(zeroVolText) && /静音/.test(zeroVolText)) {
+    ok('an element at volume 0 is reported the same way', zeroVolText);
+  } else {
+    bad('an element at volume 0 is reported the same way', zeroVolText);
   }
   await page.waitForTimeout(900);
 

@@ -6,7 +6,7 @@
 
 ```bash
 node server.js --open      # http://127.0.0.1:10240（默认端口，-p 改，PORT 环境变量也行）
-node test/verify.js        # 186 项端到端验证；--only=port|http|render|presets|playlist|resample|standalone 可只跑一段
+node test/verify.js        # 188 项端到端验证；--only=port|http|render|presets|playlist|resample|standalone 可只跑一段
 node build-standalone.js   # 改完 public/ 后重新生成单文件版
 node test/bench.js         # 性能基准
 ```
@@ -41,7 +41,7 @@ probe.js               音频头解析（WAV/FLAC/AIFF/CAF/MP4/Ogg/MP3），只�
 build-standalone.js    把同一批模块内联成单文件
 test/verify.js         测试入口：分配端口、起服务器、按 key 顺序跑各段
 test/harness.js        断言与计数、HTTP 客户端、起服务器、找 Playwright/Chromium
-test/sections/*.js     186 项按失败方式分段：port、http、render-synth、render（会话驱动）、
+test/sections/*.js     188 项按失败方式分段：port、http、render-synth、render（会话驱动）、
                        render-blanking/halo/model/axes/profile/audio/surface/theme/webgl-absent、
                        presets、resample、standalone；test/bench.js 性能基准
 ```
@@ -155,7 +155,7 @@ E *= exp(-dt/τ)                     dt 取 performance.now() 真实差值，上
 - 界面文案简短；文档不要"AI 味"：不加粗强调、不用引用块、不拿破折号当标点、不写"不是 X 而是 Y"。
 - 控件不许撒谎：拖得动就必须有用；只在一条路径上有效的会置灰并写明原因；读数要显示真正在用的值。
 - 长命令放后台跑（前台超时被 SIGTERM 会连带把同一会话里的进程一起带走，曾经把用户正在跑的服务器杀过）。不要 `pkill -f "node server.js"`，测试自己抢空闲端口。
-- 别留半成品；改完随手跑对应测试段，提交前跑全量（186 项）。
+- 别留半成品；改完随手跑对应测试段，提交前跑全量（188 项）。
 - 大于 300 行的文件考虑拆，拆分依据是失败方式而不是行数。
 
 ## 环境
