@@ -41,6 +41,8 @@ let ac = null;
 let engineWanted = 0;                       // rate requested; 0 = device default
 let sourceRate = 0;                         // native rate of loaded media; 0 = unknown
 let mediaSrc = null, splitter = null, zeroGain = null;
+let volGain = null;                         // the listening level, AFTER the analysers
+let volume = 0.85;                          // remembered across engine rebuilds
 let anL = null, anR = null;                 // analysers fed by the <audio> element
 let demoAnL = null, demoAnR = null;         // analysers fed by the built-in synth
 let demo = null;                            // demo synth nodes
@@ -108,8 +110,9 @@ function teardownEngine() {
   demo = null; demoBuilt = false; demoAnL = demoAnR = null;
   try { if (mediaSrc) mediaSrc.disconnect(); } catch (e) { /* ignore */ }
   try { if (zeroGain) zeroGain.disconnect(); } catch (e) { /* ignore */ }
+  try { if (volGain) volGain.disconnect(); } catch (e) { /* ignore */ }
   try { if (ac) ac.close(); } catch (e) { /* ignore */ }
-  ac = null; mediaSrc = splitter = zeroGain = anL = anR = null;
+  ac = null; mediaSrc = splitter = zeroGain = volGain = anL = anR = null;
   engineWanted = 0;
 }
 
@@ -132,7 +135,13 @@ function buildEngine(want) {
   const el = document.createElement('audio');
   el.id = 'audio';
   el.preload = 'metadata';
-  el.volume = prev ? prev.volume : Number(dom.volume.value);
+  /* The element stays at 1 and unmuted for its whole life. Its volume and mute
+     are applied BEFORE MediaElementAudioSourceNode, so using them for the
+     listening level would silence the analysers with it: the picture would go
+     blank at 音量 0, and a muted tab would blank the screen with the music still
+     "playing". The audible level is volGain, below the analysers. */
+  el.volume = 1;
+  el.muted = false;
   el.preservesPitch = true;
   el.playbackRate = Number(dom.rate.value) || 1;
 
@@ -173,7 +182,12 @@ function buildEngine(want) {
   mediaSrc.connect(splitter);
   splitter.connect(anL, 0);
   splitter.connect(anR, 1);
-  mediaSrc.connect(ac.destination);
+  /* The audible path taps the source AFTER nothing and BEFORE the volume: the
+     analysers must see the signal as recorded, not as listened to. */
+  volGain = ac.createGain();
+  volGain.gain.value = volume;
+  mediaSrc.connect(volGain);
+  volGain.connect(ac.destination);
 
   // Analysers with no downstream connection can be starved of processing in
   // some engines. A zero-gain path to the destination keeps them pulled
@@ -199,6 +213,14 @@ function resumeContext() {
   const ctx = ensureGraph();
   if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {});
   return ctx;
+}
+
+/** The listening level. Never the element's own volume — see buildEngine. */
+function setVolume(v) {
+  const n = Number(v);
+  volume = !Number.isFinite(n) ? volume : Math.max(0, Math.min(1, n));
+  if (volGain) volGain.gain.value = volume;
+  return volume;
 }
 
 /** A brand new source is about to be loaded, so there is nothing to preserve. */
@@ -378,6 +400,7 @@ export {
   resumeContext,
   setDemoSource,
   setSourceRate,
+  setVolume,
   signal,
   status,
   setElementHook,

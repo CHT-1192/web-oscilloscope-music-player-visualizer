@@ -137,7 +137,7 @@ async function init() {
   const scaleOut = document.querySelector('[data-out="renderScale"]');
   if (scaleOut) scaleOut.textContent = scaleLabel();
   dom.volume.value = '0.85';
-  dom.audio.volume = 0.85;
+  audio.setVolume(0.85);
 
   if (location.protocol === 'file:') {
     dom.hintNote.textContent = '浏览器不允许网页读取本地目录，请选择或拖入文件';

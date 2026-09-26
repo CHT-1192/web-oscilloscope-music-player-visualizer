@@ -213,12 +213,12 @@ function bindControls() {
   dom.seek.addEventListener('pointerup', releaseSeek);
   dom.seek.addEventListener('pointercancel', releaseSeek);
   dom.seek.addEventListener('change', releaseSeek);
-  dom.volume.addEventListener('input', () => { dom.audio.volume = Number(dom.volume.value); });
+  dom.volume.addEventListener('input', () => { audio.setVolume(dom.volume.value); });
   dom.rate.addEventListener('change', () => {
     dom.audio.preservesPitch = true;
     dom.audio.playbackRate = Number(dom.rate.value);
   });
-  dom.audio.volume = Number(dom.volume.value);
+  audio.setVolume(dom.volume.value);
   const rateModeSel = $('rateMode');
   if (rateModeSel) {
     rateModeSel.value = S.rateMode;
@@ -384,14 +384,12 @@ function onKey(e) {
     case 'ArrowUp':
       e.preventDefault();
       dom.volume.value = String(clamp(Number(dom.volume.value) + 0.05, 0, 1));
-      dom.audio.volume = Number(dom.volume.value);
-      toast(`音量 ${Math.round(dom.audio.volume * 100)}%`);
+      toast(`音量 ${Math.round(audio.setVolume(dom.volume.value) * 100)}%`);
       break;
     case 'ArrowDown':
       e.preventDefault();
       dom.volume.value = String(clamp(Number(dom.volume.value) - 0.05, 0, 1));
-      dom.audio.volume = Number(dom.volume.value);
-      toast(`音量 ${Math.round(dom.audio.volume * 100)}%`);
+      toast(`音量 ${Math.round(audio.setVolume(dom.volume.value) * 100)}%`);
       break;
     case ',': nextTrack(-1); break;
     case '.': nextTrack(1); break;

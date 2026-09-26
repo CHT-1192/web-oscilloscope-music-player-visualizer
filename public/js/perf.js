@@ -99,7 +99,16 @@ function watchAudio(now) {
   if (st.clockMs) { lastClock = st.clockMs; lastClockWall = now; }
   const quiet = live && peakL < 1e-4 && peakR < 1e-4;
   silentMs = quiet ? silentMs + 100 : 0;
-  if (silentMs === 1200) noteEvent(`信号静默 1.2 s(在播放但分析器全 0)· readyState ${el.readyState}`);
+  if (silentMs === 1200) {
+    noteEvent(`信号静默 1.2 s（在播放但分析器全 0）· readyState ${el.readyState}`);
+    /* The one silence the app cannot undo from inside: HTMLMediaElement.volume
+       and .muted are applied BEFORE MediaElementAudioSourceNode, so a tab muted
+       by the browser feeds the analysers zeros and the screen goes blank while
+       the transport still says "playing". Say so instead of drawing nothing. */
+    core.toast(el.muted
+      ? '正在播放但没有信号：标签页被静音了'
+      : '正在播放但分析器没有信号，检查音量与输出设备');
+  }
 }
 
 function recordFrame(now) {

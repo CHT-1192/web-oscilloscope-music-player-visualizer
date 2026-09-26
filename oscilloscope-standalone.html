@@ -1303,6 +1303,8 @@ let ac = null;
 let engineWanted = 0;                       // rate requested; 0 = device default
 let sourceRate = 0;                         // native rate of loaded media; 0 = unknown
 let mediaSrc = null, splitter = null, zeroGain = null;
+let volGain = null;                         // the listening level, AFTER the analysers
+let volume = 0.85;                          // remembered across engine rebuilds
 let anL = null, anR = null;                 // analysers fed by the <audio> element
 let demoAnL = null, demoAnR = null;         // analysers fed by the built-in synth
 let demo = null;                            // demo synth nodes
@@ -1370,8 +1372,9 @@ function teardownEngine() {
   demo = null; demoBuilt = false; demoAnL = demoAnR = null;
   try { if (mediaSrc) mediaSrc.disconnect(); } catch (e) { /* ignore */ }
   try { if (zeroGain) zeroGain.disconnect(); } catch (e) { /* ignore */ }
+  try { if (volGain) volGain.disconnect(); } catch (e) { /* ignore */ }
   try { if (ac) ac.close(); } catch (e) { /* ignore */ }
-  ac = null; mediaSrc = splitter = zeroGain = anL = anR = null;
+  ac = null; mediaSrc = splitter = zeroGain = volGain = anL = anR = null;
   engineWanted = 0;
 }
 
@@ -1394,7 +1397,13 @@ function buildEngine(want) {
   const el = document.createElement('audio');
   el.id = 'audio';
   el.preload = 'metadata';
-  el.volume = prev ? prev.volume : Number(dom.volume.value);
+  /* The element stays at 1 and unmuted for its whole life. Its volume and mute
+     are applied BEFORE MediaElementAudioSourceNode, so using them for the
+     listening level would silence the analysers with it: the picture would go
+     blank at 音量 0, and a muted tab would blank the screen with the music still
+     "playing". The audible level is volGain, below the analysers. */
+  el.volume = 1;
+  el.muted = false;
   el.preservesPitch = true;
   el.playbackRate = Number(dom.rate.value) || 1;
 
@@ -1435,7 +1444,12 @@ function buildEngine(want) {
   mediaSrc.connect(splitter);
   splitter.connect(anL, 0);
   splitter.connect(anR, 1);
-  mediaSrc.connect(ac.destination);
+  /* The audible path taps the source AFTER nothing and BEFORE the volume: the
+     analysers must see the signal as recorded, not as listened to. */
+  volGain = ac.createGain();
+  volGain.gain.value = volume;
+  mediaSrc.connect(volGain);
+  volGain.connect(ac.destination);
 
   // Analysers with no downstream connection can be starved of processing in
   // some engines. A zero-gain path to the destination keeps them pulled
@@ -1461,6 +1475,14 @@ function resumeContext() {
   const ctx = ensureGraph();
   if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {});
   return ctx;
+}
+
+/** The listening level. Never the element's own volume — see buildEngine. */
+function setVolume(v) {
+  const n = Number(v);
+  volume = !Number.isFinite(n) ? volume : Math.max(0, Math.min(1, n));
+  if (volGain) volGain.gain.value = volume;
+  return volume;
 }
 
 /** A brand new source is about to be loaded, so there is nothing to preserve. */
@@ -1640,6 +1662,7 @@ __exp.readSignal = readSignal;
 __exp.resumeContext = resumeContext;
 __exp.setDemoSource = setDemoSource;
 __exp.setSourceRate = setSourceRate;
+__exp.setVolume = setVolume;
 __exp.signal = signal;
 __exp.status = status;
 __exp.setElementHook = setElementHook;
@@ -2449,7 +2472,16 @@ function watchAudio(now) {
   if (st.clockMs) { lastClock = st.clockMs; lastClockWall = now; }
   const quiet = live && peakL < 1e-4 && peakR < 1e-4;
   silentMs = quiet ? silentMs + 100 : 0;
-  if (silentMs === 1200) noteEvent(`信号静默 1.2 s(在播放但分析器全 0)· readyState ${el.readyState}`);
+  if (silentMs === 1200) {
+    noteEvent(`信号静默 1.2 s（在播放但分析器全 0）· readyState ${el.readyState}`);
+    /* The one silence the app cannot undo from inside: HTMLMediaElement.volume
+       and .muted are applied BEFORE MediaElementAudioSourceNode, so a tab muted
+       by the browser feeds the analysers zeros and the screen goes blank while
+       the transport still says "playing". Say so instead of drawing nothing. */
+    core.toast(el.muted
+      ? '正在播放但没有信号：标签页被静音了'
+      : '正在播放但分析器没有信号，检查音量与输出设备');
+  }
 }
 
 function recordFrame(now) {
@@ -5028,12 +5060,12 @@ function bindControls() {
   dom.seek.addEventListener('pointerup', releaseSeek);
   dom.seek.addEventListener('pointercancel', releaseSeek);
   dom.seek.addEventListener('change', releaseSeek);
-  dom.volume.addEventListener('input', () => { dom.audio.volume = Number(dom.volume.value); });
+  dom.volume.addEventListener('input', () => { audio.setVolume(dom.volume.value); });
   dom.rate.addEventListener('change', () => {
     dom.audio.preservesPitch = true;
     dom.audio.playbackRate = Number(dom.rate.value);
   });
-  dom.audio.volume = Number(dom.volume.value);
+  audio.setVolume(dom.volume.value);
   const rateModeSel = $('rateMode');
   if (rateModeSel) {
     rateModeSel.value = S.rateMode;
@@ -5199,14 +5231,12 @@ function onKey(e) {
     case 'ArrowUp':
       e.preventDefault();
       dom.volume.value = String(clamp(Number(dom.volume.value) + 0.05, 0, 1));
-      dom.audio.volume = Number(dom.volume.value);
-      toast(`音量 ${Math.round(dom.audio.volume * 100)}%`);
+      toast(`音量 ${Math.round(audio.setVolume(dom.volume.value) * 100)}%`);
       break;
     case 'ArrowDown':
       e.preventDefault();
       dom.volume.value = String(clamp(Number(dom.volume.value) - 0.05, 0, 1));
-      dom.audio.volume = Number(dom.volume.value);
-      toast(`音量 ${Math.round(dom.audio.volume * 100)}%`);
+      toast(`音量 ${Math.round(audio.setVolume(dom.volume.value) * 100)}%`);
       break;
     case ',': nextTrack(-1); break;
     case '.': nextTrack(1); break;
@@ -5451,7 +5481,7 @@ async function init() {
   const scaleOut = document.querySelector('[data-out="renderScale"]');
   if (scaleOut) scaleOut.textContent = scaleLabel();
   dom.volume.value = '0.85';
-  dom.audio.volume = 0.85;
+  audio.setVolume(0.85);
 
   if (location.protocol === 'file:') {
     dom.hintNote.textContent = '浏览器不允许网页读取本地目录，请选择或拖入文件';

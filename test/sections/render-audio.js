@@ -58,6 +58,55 @@ async function audio(ctx) {
   if (live > 200) ok('live trace is drawn from the audio file', `${live} lit pixels`);
   else bad('live trace is drawn from the audio file', `${live} lit pixels`);
 
+  /* ---- the picture must not depend on the listening level ----------------
+     HTMLMediaElement.volume and .muted are applied BEFORE
+     MediaElementAudioSourceNode, so anything that sets them for playback
+     silences the analysis too. That is exactly what happened: 音量 0 blanked the
+     scope, and a tab muted by the browser did the same with the transport still
+     saying "playing". The audio path now uses a GainNode below the analysers and
+     leaves the element at 1/unmuted, so both of these have to hold. */
+  const rmsNow = () => page.evaluate(() => {
+    const a = window.__scope.readAnalyser();
+    const r = (x) => Math.sqrt(x.reduce((s, v) => s + v * v, 0) / x.length);
+    return +Math.max(r(a.L), r(a.R)).toFixed(4);
+  });
+  const before0 = await rmsNow();
+  await page.evaluate(() => {
+    const el = document.getElementById('volume');
+    el.value = '0';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await page.waitForTimeout(1600);
+  const atZero = { rms: await rmsNow(), lit: await litPixels() };
+  await page.evaluate(() => {
+    const el = document.getElementById('volume');
+    el.value = '0.85';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  if (before0 > 0.005 && atZero.rms > before0 * 0.4 && atZero.lit > 200) {
+    ok('音量 0 does not silence the scope', `analyser ${before0} → ${atZero.rms}, ${atZero.lit} lit pixels`);
+  } else {
+    bad('音量 0 does not silence the scope', JSON.stringify({ before0, ...atZero }));
+  }
+  /* The other half: a muted element (which is what a browser tab mute does) is
+     still silent, and the app has to say so rather than draw an empty screen.
+     The watchdog counts 100 ms per 250 ms tick, so 1.2 s of silence is ~3 s of
+     wall clock — poll for the notice instead of guessing. */
+  await page.evaluate(() => { document.getElementById('audio').muted = true; });
+  let notice = { text: '' };
+  for (let i = 0; i < 30; i++) {
+    await page.waitForTimeout(250);
+    notice = await page.evaluate(() => ({ text: document.getElementById('toast').textContent }));
+    if (/没有信号/.test(notice.text)) break;
+  }
+  await page.evaluate(() => { document.getElementById('audio').muted = false; });
+  if (/没有信号/.test(notice.text) && /静音/.test(notice.text)) {
+    ok('a muted element is reported, not drawn as an empty screen', notice.text);
+  } else {
+    bad('a muted element is reported, not drawn as an empty screen', JSON.stringify(notice));
+  }
+  await page.waitForTimeout(900);
+
   await page.screenshot({ path: path.join(SHOTS, 'live-audio.png') });
 
   /* ---- the shipped defaults must not blow the picture out ---------------
