@@ -207,6 +207,23 @@ async function pcmTests(pw) {
   if (errors.length === 0) ok('no errors while switching the analysis source');
   else bad('no errors while switching the analysis source', errors.slice(0, 2).join(' | '));
 
+  /* The built-in generator is the source in demo mode, so the line must not name
+     either sample path there: it would be describing audio that is not playing.
+     ?demo=1 alone (with ?track= the track wins, by design) still loads a track in
+     the background first, so a decode is genuinely in flight when the demo takes
+     over — which is the case that would otherwise read 未就绪. */
+  await page.goto(`${BASE}/?demo=1`, { waitUntil: 'load' });
+  await page.waitForTimeout(1800);
+  const demo = await page.evaluate(() => ({
+    source: window.__scope.state.source,
+    note: document.getElementById('pcmNote').textContent,
+  }));
+  if (demo.source === 'demo' && demo.note === '') {
+    ok('the status line is silent while the demo signal is playing', 'source demo, note empty');
+  } else {
+    bad('the status line is silent while the demo signal is playing', JSON.stringify(demo));
+  }
+
   await page.screenshot({ path: path.join(SHOTS, 'pcm-source.png') });
   await browser.close();
 }

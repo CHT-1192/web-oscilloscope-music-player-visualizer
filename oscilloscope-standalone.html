@@ -5220,14 +5220,18 @@ const {
 const uiCache = { cur: -1, dur: -1, seek: -1 };
 /* The 原始样本 switch needs a second line, because on some files it is on and
    still not the source in use — the picture would then be coming from the
-   element tap while the switch says otherwise. Name the one that is running. */
+   element tap while the switch says otherwise. Name the one that is running.
+   With no track loaded there is nothing to name, so the switch stands alone
+   rather than reporting a source for audio that does not exist. */
 function updatePcmNote() {
   const el = dom.pcmNote;
   if (!el) return;
-  const p = audio.status().pcm;
-  const text = !p.enabled ? '元素采样'
-    : p.usable ? `原始样本 · ${fmtBytes(p.bytes)}`
-      : `元素采样（${p.reason || (p.rateLimited ? '变速中' : '未就绪')}）`;
+  const st = audio.status();
+  const p = st.pcm;
+  const text = st.source === 'demo' || p.reason === '未载入' ? ''
+    : !p.enabled ? '元素采样'
+      : p.usable ? `原始样本 · ${fmtBytes(p.bytes)}`
+        : `元素采样（${p.reason || (p.rateLimited ? '变速中' : '未就绪')}）`;
   if (el.textContent !== text) el.textContent = text;
 }
 
