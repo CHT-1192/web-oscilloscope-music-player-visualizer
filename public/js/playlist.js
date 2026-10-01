@@ -180,6 +180,7 @@ function stopSource() {
   dom.audio.pause();
   dom.audio.removeAttribute('src');
   dom.audio.load();
+  audio.dropPcmSamples();
   curIndex = -1;
   presets.setTrackKey(null, null);
   render.resetTraceState();
@@ -298,6 +299,8 @@ async function loadServerTracks() {
       duration: t.duration || 0,
       format: t.format || null,
       sampleRate: t.sampleRate || 0,
+      channels: t.channels || 0,
+      bits: t.bits || 0,
       codec: t.codec || null,
       meta: [
         t.format,
@@ -333,19 +336,31 @@ async function probeNativeRate(file) {
     // ---- WAV / RIFF
     if (tag(0) === 'RIFF' && tag(8) === 'WAVE') {
       let off = 12;
-      while (off + 24 <= head.length) {
+      let fmt = null;
+      let dataSize = null;
+      while (off + 8 <= head.length) {
         const id = tag(off);
         const size = dv.getUint32(off + 4, true);
-        if (id === 'fmt ') {
-          return {
-            format: 'WAV',
+        if (id === 'fmt ' && off + 24 <= head.length) {
+          fmt = {
             rate: dv.getUint32(off + 12, true),
             channels: dv.getUint16(off + 10, true),
             bits: dv.getUint16(off + 22, true),
+            byteRate: dv.getUint32(off + 16, true),
           };
-        }
-        if (id === 'data') break;
+        } else if (id === 'data') { dataSize = size; break; }
         off += 8 + size + (size % 2);
+      }
+      if (fmt && fmt.rate) {
+        return {
+          format: 'WAV',
+          rate: fmt.rate,
+          channels: fmt.channels,
+          bits: fmt.bits,
+          /* The byte count is the whole duration, and the analysis path needs it
+             to know what decoding this file would cost before it starts. */
+          duration: dataSize != null && fmt.byteRate > 0 ? dataSize / fmt.byteRate : null,
+        };
       }
     }
     // ---- FLAC / STREAMINFO
@@ -552,10 +567,16 @@ async function addLocalFiles(files) {
       name: f.name,
       url: URL.createObjectURL(f),
       blob: true,
+      /* Kept so the analysis path can read the bytes straight out of the File:
+         no second request, and it works on file:// where fetching a blob URL is
+         not always allowed. */
+      file: f,
       size: f.size || 0,
-      duration: 0,             // filled in when the element reports loadedmetadata
+      duration: (info && info.duration) || 0,   // otherwise when the element reports loadedmetadata
       format: (info && info.format) || null,
       sampleRate: info && info.rate ? info.rate : 0,
+      channels: (info && info.channels) || 0,
+      bits: (info && info.bits) || 0,
       codec: (info && info.codec) || null,
       meta: describeAudio(info, f.size),
     });
@@ -596,6 +617,9 @@ function loadTrack(i, autoplay) {
   // media is never resampled into the device rate on the analysis path.
   audio.setSourceRate(t.sampleRate);
   ensureEngineRate();
+  /* The analysis source for this track. Asynchronous, and silent about it: the
+     element tap paints until (and unless) the decode lands. */
+  audio.loadPcmSamples(t);
   dom.audio.src = t.url;
   dom.audio.load();
   dom.trackTitle.textContent = t.name;

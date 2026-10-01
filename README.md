@@ -26,7 +26,7 @@ E *= exp(-dt/τ)                      按真实经过的时间衰减
 
 *Oscillofun @22.5s，默认配方，光晕 55%，两边只有渲染器不同。左边那层包住图形的雾是 halation；右边笔画更硬，因为十级 alpha 阶梯到顶就没有余量了。*
 
-没有 WebGL2，或者拿不到浮点渲染目标时，退回 Canvas 2D（`?renderer=2d` 可以强制）。两条路径跑同一套 188 项检查：渲染组整体跑两遍，再加一次 `--disable-webgl` 的强制回退。回退路径做不到的事在上面写明了。
+没有 WebGL2，或者拿不到浮点渲染目标时，退回 Canvas 2D（`?renderer=2d` 可以强制）。两条路径跑同一套 198 项检查：渲染组整体跑两遍，再加一次 `--disable-webgl` 的强制回退。回退路径做不到的事在上面写明了。
 
 启动时先在临时画布上画一段再读回来，确认真的画出了东西，才把真画布交给 WebGL。画布一辈子只发一种上下文，选错没有退路；有驱动会宣称支持浮点渲染目标却丢掉每一次绘制。
 
@@ -46,7 +46,7 @@ E *= exp(-dt/τ)                      按真实经过的时间衰减
 ```bash
 node server.js --open      # http://127.0.0.1:10240
 node server.js -p 8080     # 换端口；被占用会自动 +1 重试，也可以用环境变量 PORT
-node test/verify.js        # 188 项端到端验证
+node test/verify.js        # 198 项端到端验证
 node test/bench.js         # 性能基准
 node build-standalone.js   # 改完 public/ 之后重新生成单文件版
 ```
@@ -90,7 +90,7 @@ node build-standalone.js   # 改完 public/ 之后重新生成单文件版
 
 两种模式。自动按曲记忆是默认的，切歌时套用这首歌上次的设置，改动随时记录；手动模式切歌不动设置，只有点预设才变。两种模式都记录每首歌的参数，中途换模式不会丢东西。
 
-拖出满意的一套可以保存成自定义预设，双击改名，点 `×` 删，要按两下。存在浏览器本地，刷新和重开都在。导出是一段 JSON 文本，导入会校验：只认识的键、只接受滑块能表达的范围，名字撞车自动让步，不是 JSON 就原样不动。预设不带引擎采样率和渲染倍率，这两项描述的是机器，不是画面。
+拖出满意的一套可以保存成自定义预设，双击改名，点 `×` 删，要按两下。存在浏览器本地，刷新和重开都在。导出是一段 JSON 文本，导入会校验：只认识的键、只接受滑块能表达的范围，名字撞车自动让步，不是 JSON 就原样不动。预设不带引擎采样率、渲染倍率和「原始样本」，这三项描述的是机器和文件，不是画面。
 
 ## 播放列表
 
@@ -131,7 +131,11 @@ node build-standalone.js   # 改完 public/ 之后重新生成单文件版
 
 窗口是最近 8192 帧，约两分半。
 
-音量不影响画面。可听的那条路走一个 GainNode，接在分析器**后面**；`<audio>` 元素自己永远是音量 1、不静音。原因是 `HTMLMediaElement.volume` 和 `.muted` 作用在 `MediaElementAudioSourceNode` **之前**，一旦用它来控制听感，分析器就跟着一起被静音——音量拖到 0 画面就空了，标签页被静音更是直接黑屏而播放条还显示在播。这两种情况现在都有测试盯着；标签页静音那种应用没法自己解开，所以静默 1.2 秒会弹一条明确的话告诉你原因，而不是画一片黑。
+音量不影响画面。可听的那条路走一个 GainNode，接在分析器**后面**；`<audio>` 元素自己永远是音量 1、不静音。
+
+但即使这样，元素这条路仍然读不到乘音量之前的信号。`MediaElementAudioSourceNode` 的输出就是元素的有效音量乘完之后的东西：Web Audio 1.22 要求建立节点之后 `volume` 照常生效，Gecko 就是把它做在节点自己的输入轨上（bug 2010427，Firefox 149 落地），节点内部没有乘之前的抽头。元素音量、`.muted`、以及浏览器的标签静音，都还是能一起弄黑画面。
+
+所以分析默认改读文件自己的采样点（设置面板「信号」一组的「原始样本」开关，默认开）。用 `decodeAudioData` 在一个采样率等于文件原生采样率的 `OfflineAudioContext` 里解码，`AudioBuffer` 上根本没有音量这个东西，解出来的就是文件的样本；播放照旧交给 `<audio>`，seek、变速、流式一项没动，换掉的只有分析用的那一份样本。量过的数：15 MB / 146 秒的 FLAC 解出 51.5 MB、耗时 84 ms；和一个独立的 ffmpeg 解码逐点比，24 位和 32 位 PCM 差值 0，16 位最大 0.73 LSB（2.2e-5，−93 dBFS），其中大部分来自 int→float 的定标本身（这里是 32767，ffmpeg 是 32768），所以这是一条有界的说法，不是「逐位相同」。解码后预估超过 256 MB、或者文件超过 128 MB，就退回元素采样，状态行会写明是哪个原因；播放速度不是 1 时也退回，因为变速后的波形只有元素有。开关、状态行、和实际读的那份样本三者必须一致，测试两头都量了：开着时元素静音画面照画（分析器确实已经全 0），关掉后同一个静音立刻把画面清空。
 
 ## 控制台接口
 
@@ -141,6 +145,8 @@ node build-standalone.js   # 改完 public/ 之后重新生成单文件版
 | `__scope.perf(n)` | 帧日志文本，n 为最近多少秒 |
 | `__scope.readTrace(x,y,w,h)` | 画面某一块的 RGBA 字节 |
 | `__scope.readAnalyser()` | 当前窗口两个声道的原始采样 |
+| `__scope.readSignal()` | 这一帧真正交给渲染器的那份样本（元素采样或文件样本，看当时用的是哪条） |
+| `__scope.pcmSlice(start, n)` | 解码缓冲里任意位置的原始帧，用来和独立解码器逐点对 |
 | `__scope.setRateMode('device'\|'auto')` | 切换采样率策略 |
 
 URL 参数：`?renderer=2d` 强制 Canvas 回退，`?demo=1` 内置合成信号，`?track=N` 直接载入第 N 首，`?play=1` 载入后自动播放。测试的渲染阶段就是靠这几个跑起来的。
@@ -157,7 +163,8 @@ URL 参数：`?renderer=2d` 强制 Canvas 回退，`?demo=1` 内置合成信号�
 server.js                       零依赖服务器：静态文件、播放列表 API、Range 流式传输
 probe.js                        音频头解析：采样率、位深、声道、时长，不解码音频帧
 public/js/core.js               工具函数、设置对象、DOM 引用、toast
-public/js/audio.js              音频图、分析器、演示信号、采样率策略
+public/js/audio.js              音频图、分析器、演示信号、采样率策略、分析源的选择
+public/js/pcm.js                文件自己那份样本：离线解码、内存上限、读取位置
 public/js/shaders.js            GLSL 源码
 public/js/gl.js                 能量渲染器：浮点累积、色调映射、halation
 public/js/perf.js               帧间隔环、工作耗时环、掉音看门狗
@@ -171,13 +178,13 @@ public/js/main.js               接线与 init
 build-standalone.js             把同一批源码内联成单文件
 test/verify.js                  测试入口：分配端口、起服务器、按顺序跑各段
 test/harness.js                 断言与计数、HTTP 客户端、起服务器、找浏览器
-test/sections/*.js              188 项按失败方式分段：port、http、render-*、presets、playlist、resample、standalone
+test/sections/*.js              198 项按失败方式分段：port、http、render-*、presets、playlist、resample、pcm、standalone
 test/bench.js                   性能基准
 ```
 
-服务器和测试也按失败方式拆：`server.js` 管路由、Range 和启动，音频头解析在 `probe.js`（写错是播放列表里的数字不对）；`verify.js` 只当入口，每一项检查在 `test/sections/` 里，渲染段是一个浏览器会话加一串场景（消隐、光晕、坐标、剖面、实时音频、累积层、主题）。
+服务器和测试也按失败方式拆：`server.js` 管路由、Range 和启动，音频头解析在 `probe.js`（写错是播放列表里的数字不对）；`verify.js` 只当入口，每一项检查在 `test/sections/` 里，渲染段是一个浏览器会话加一串场景（消隐、光晕、坐标、剖面、实时音频、累积层、主题），分析源单独一段（默认开、和 ffmpeg 逐点对、静音免疫、超上限回退、读取位置不跳）。
 
-模块是单向依赖的：core → audio / shaders → gl / perf / trace → render → apply → presets → playlist → ui → main。拆分的依据是失败方式：GLSL 写错是驱动报编译错，perf 写错是日志里的数字不对，trace 写错是画面不对，三种查法混在一个文件里没法用。模块之间只通过命名空间调用或者顶部解构出来的别名引用，没有跨模块的裸变量。
+模块是单向依赖的：`core → pcm / shaders`，`pcm → audio`，`shaders → gl`，然后 `{audio, gl, perf, trace} → render → apply → presets → playlist → ui → main`。拆分的依据是失败方式：GLSL 写错是驱动报编译错，perf 写错是日志里的数字不对，trace 写错是画面不对，三种查法混在一个文件里没法用。模块之间只通过命名空间调用或者顶部解构出来的别名引用，没有跨模块的裸变量。
 
 服务器版按原生 ES 模块加载，单文件版由 `build-standalone.js` 内联。内联器只认一种很小的方言（`import * as ns from './x.js'`，`export function/const/{...}`），其他写法都报错退出：`export default`、`export let`、具名 import、动态 `import()`、import 环、指向不存在导出的别名。`export let` 在真 ESM 里是活绑定，内联后会变成快照，与其编错不如编不过。
 
@@ -189,8 +196,8 @@ test/bench.js                   性能基准
 - FLAC 放不了是浏览器缺解码器，先转 WAV。
 - ALAC、AIFF、AIFF-C、CAF 在 Chrome / Chromium 里放不了。这几个浏览器没有对应解码器，`canPlayType` 返回空字符串，元素报 `MediaError 4`；Safari 都能放。界面会直接说清是哪种格式。
 - 采样率从文件头读，不靠解码。覆盖 WAV、FLAC、m4a（AAC / ALAC）、AIFF / AIFF-C / CAF、Ogg（Vorbis / Opus）、MP3。几处细节：m4a 的 `moov` 常在文件末尾（ffmpeg 默认把 `mdat` 写在前），要补读尾部，而 ALAC 的真值在 36 字节的 codec box 里，因为通用 sample entry 的采样率是 16.16 定点，装不下 65535 Hz 以上；AIFF 的采样率是 80 位 IEEE 扩展浮点；Ogg 的时长是最后一页的 granule position，也要读尾部，Opus 一律报 48 kHz，它解码出来就是 48 kHz；MP3 只报采样率和声道。
-- 裸 `.aac`（ADTS）和 `.webm` / `.weba`（EBML）没解析，会退回设备采样率，也就是会被重采样。已知缺口。
-- 270 MB 的 FLAC 不会卡：走 audio 元素流式解码加服务器 Range，不整文件进内存；`decodeAudioData` 才会吃掉上 GB。
+- 裸 `.aac`（ADTS）和 `.webm` / `.weba`（EBML）没解析，会退回设备采样率，也就是会被重采样；这两种文件采样率未知，「原始样本」也跟着退回元素采样。已知缺口。
+- 270 MB 的 FLAC 不会卡：走 audio 元素流式解码加服务器 Range，不整文件进内存。分析那条路才会整份解开（服务器版因此会给同一个文件再取一次字节，命中 HTTP 缓存就省了），所以它自己带两个上限（文件 128 MB、解码后预估 256 MB），超过了就退回元素采样；正常情况下峰值是文件字节加上解出来的 float32，15 MB 的文件大约 70 MB。
 - 余辉拉到 0 会闪，每帧全清只画一个片段；40% 以上才累积得出完整画面。
 
 ## 许可

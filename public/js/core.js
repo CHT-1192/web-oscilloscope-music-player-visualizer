@@ -70,6 +70,10 @@ const DEFAULTS = {
   renderScale: 'auto',
   blanking: true, trigger: false, autoGain: false, grid: true, beamDot: false,
   invertX: false, invertY: false,
+  /* Analysis reads the file's own decoded samples instead of the element tap.
+     On by default: the element tap is silenced by anything that silences the
+     listening, and that is a property of the browser, not of the music. */
+  pcm: true,
 };
 const S = Object.assign({}, DEFAULTS);
 const winSize = () => WINDOW_CHOICES[clamp(S.windowIdx | 0, 0, WINDOW_CHOICES.length - 1)];
@@ -81,8 +85,10 @@ const winSize = () => WINDOW_CHOICES[clamp(S.windowIdx | 0, 0, WINDOW_CHOICES.le
 const flags = { redraw: true, settle: 0 };
 
 /** The keys a preset carries. rateMode and renderScale describe the machine you
-    happen to be on, so a preset must not carry them to someone else's laptop. */
-const PRESET_KEYS = Object.keys(DEFAULTS).filter((k) => k !== 'rateMode' && k !== 'renderScale');
+    happen to be on, so a preset must not carry them to someone else's laptop.
+    `pcm` describes where the SAMPLES come from, which is a fact about the
+    browser and the file rather than about the picture, so it stays out too. */
+const PRESET_KEYS = Object.keys(DEFAULTS).filter((k) => k !== 'rateMode' && k !== 'renderScale' && k !== 'pcm');
 
 const FORMATTERS = {
   // The readout carries the sign the mapping actually uses, so a flipped axis
@@ -119,6 +125,7 @@ const dom = {
   trackFilter: $('trackFilter'), trackSort: $('trackSort'),
   btnSortDir: $('btnSortDir'), btnClear: $('btnClear'), btnMode: $('btnMode'),
   fileInput: $('fileInput'), toast: $('toast'), swatches: $('swatches'),
+  pcmNote: $('pcmNote'),
   presetMode: $('presetMode'), presetChips: $('presetChips'), presetStatus: $('presetStatus'),
   presetRow: $('presetRow'), presetName: $('presetName'), presetText: $('presetText'),
 };

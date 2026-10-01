@@ -419,6 +419,9 @@ function state() {
     workMs: workAvg,
     halo: S.halo,
     doseMax: trace.doseMax(),
+    /* What the last drawn frame actually carried — the silence watchdog reads
+       these too, so a test can ask the same question it asks. */
+    peaks: trace.peaks(),
     work: {
       trimmed: perf.workTrimmed(0.25),   // load-proof headline number
       trimmed50: perf.workTrimmed(0.5),

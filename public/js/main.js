@@ -102,6 +102,20 @@ window.__scope = {
   perf: (seconds) => render.perfLog(seconds),
   /* The trace layer as RGBA bytes, whichever renderer is running. */
   readTrace: (x, y, w, h) => render.readTrace(x, y, w, h),
+  /* The analysis buffers as they were last read: the picture's actual input,
+     whichever source produced it (the element tap or the file's own samples). */
+  readSignal() {
+    const f = signal();
+    return {
+      capacity: f.capacity,
+      float: f.float,
+      L: Array.from(f.L.subarray(0, f.capacity)),
+      R: Array.from(f.R.subarray(0, f.capacity)),
+    };
+  },
+  /* Raw frames of the decoded file, at an absolute offset. Used to compare the
+     analysis source against an independent decode of the same file. */
+  pcmSlice: (start, n) => audio.pcmSlice(start, n),
   readAnalyser() {
     const a = currentAnalysers();
     if (!a) return null;

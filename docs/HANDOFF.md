@@ -1,12 +1,12 @@
 # 交接文档 / 上下文压缩
 
-截至 `aaf4b34`。这份文档的作用是替代之前几轮对话：里面是结论、常量和没做完的事，不是过程。
+截至「原始样本」那一版（`pcm.js` 加入，全套 198 项）。这份文档的作用是替代之前几轮对话：里面是结论、常量和没做完的事，不是过程。
 
 ## 运行与检查
 
 ```bash
 node server.js --open      # http://127.0.0.1:10240（默认端口，-p 改，PORT 环境变量也行）
-node test/verify.js        # 188 项端到端验证；--only=port|http|render|presets|playlist|resample|standalone 可只跑一段
+node test/verify.js        # 198 项端到端验证；--only=port|http|render|presets|playlist|resample|pcm|standalone 可只跑一段
 node build-standalone.js   # 改完 public/ 后重新生成单文件版
 node test/bench.js         # 性能基准
 ```
@@ -25,7 +25,8 @@ node test/bench.js         # 性能基准
 
 ```
 public/js/core.js      工具、设置对象 S、DOM 引用、toast、共享 flags（叶子）
-public/js/audio.js     音频图、分析器、演示信号、采样率策略
+public/js/audio.js     音频图、分析器、演示信号、采样率策略、分析源的选择
+public/js/pcm.js       文件自己那份样本：OfflineAudioContext 解码、内存上限、读取位置
 public/js/shaders.js   GLSL 源码
 public/js/gl.js        能量渲染器：浮点累积、色调映射、halation pass
 public/js/perf.js      帧间隔环、工作耗时环、掉音看门狗、长任务/生命周期
@@ -41,12 +42,12 @@ probe.js               音频头解析（WAV/FLAC/AIFF/CAF/MP4/Ogg/MP3），只�
 build-standalone.js    把同一批模块内联成单文件
 test/verify.js         测试入口：分配端口、起服务器、按 key 顺序跑各段
 test/harness.js        断言与计数、HTTP 客户端、起服务器、找 Playwright/Chromium
-test/sections/*.js     188 项按失败方式分段：port、http、render-synth、render（会话驱动）、
+test/sections/*.js     198 项按失败方式分段：port、http、render-synth、render（会话驱动）、
                        render-blanking/halo/model/axes/profile/audio/surface/theme/webgl-absent、
-                       presets、resample、standalone；test/bench.js 性能基准
+                       presets、playlist、resample、pcm、standalone；test/bench.js 性能基准
 ```
 
-依赖单向无环：`core → {audio, shaders} → {gl, perf, trace} → render → apply → presets → playlist → ui → main`。模块之间只用命名空间调用（`audio.isLive()`）或顶部解构出的别名，禁止跨模块裸变量。拆分的依据是失败方式：GLSL 写错是驱动编译错，perf 写错是日志数字不对，trace 写错是画面不对。
+依赖单向无环：`core → pcm / shaders`，`pcm → audio`，`shaders → gl`，然后 `{audio, gl, perf, trace} → render → apply → presets → playlist → ui → main`。模块之间只用命名空间调用（`audio.isLive()`）或顶部解构出的别名，禁止跨模块裸变量。拆分的依据是失败方式：GLSL 写错是驱动编译错，perf 写错是日志数字不对，trace 写错是画面不对。
 
 内联器（`build-standalone.js`）只认一种方言：`import * as ns from './x.js'` + `export function/const/{...}`。其他写法一律报错退出：`export default`、`export let`、具名 import、动态 `import()`、import 环、指向不存在导出的别名。它还会 `new Function` 自检产物能不能解析。改模块结构后先跑它，静态错误一秒就报。
 
@@ -78,6 +79,18 @@ E *= exp(-dt/τ)                     dt 取 performance.now() 真实差值，上
 
 **渲染器选择是一次性的**：`render.js` 模块加载时 `probeGL()` 先在临时画布上画一段、读回像素、确认真的有光，通过才把真画布交给 WebGL（画布一生只发一种上下文）。`?renderer=2d` 强制回退。顶栏徽章会写当前是 `能量模型` 还是 `8 位路径`。
 
+## 分析源（读哪份样本）
+
+元素那条路读不到乘音量之前的信号，这不是实现问题：`MediaElementAudioSourceNode` 的输出按规范就是元素的有效音量乘完之后的结果（Web Audio 1.22 要求建节点后 volume 照常生效），Gecko 把它做在节点自己的输入轨上（bug 2010427，Firefox 149 落地），`captureStream()` 也取在同一个点上。所以想拿到原始样本只有一条路：别用元素当采样源。
+
+`pcm.js` 干的就这一件事，默认开（`S.pcm`，设置面板「信号」一组的开关）。用 `decodeAudioData` 在一个采样率等于文件原生采样率的 `OfflineAudioContext` 里解码，`AudioBuffer` 上没有音量这个东西。播放照旧是 `<audio>`，seek、变速、Range 流式都不动，换的只有分析那一份样本。
+
+- 单点判断在 `audio.js pcmSource()`：开关关掉、采样率未知、还没解码完、或者 `playbackRate !== 1`（变速后的波形只有元素有）都不用它。
+- 读取契约和 `AnalyserNode` 一致：永远填满 `analyserSize` 个样本、文件开头之前填静音，所以 `trace.js` 分不出两份来源。
+- 读取位置由 `ac.currentTime` 推进，用元素播放头校正（seek、暂停恢复、漂移超过 1 秒），不是跟着播放头走；规范只保证播放头每几百毫秒更新一次。
+- 上限：文件 128 MB、解码后预估 256 MB（时长未知时按 128 kbps 估，宁大不小）。超过就退回元素采样，状态行写原因。
+- 解码器如果返回了别的采样率（说明它偷偷重采样了），这条路径直接判不可用，而不是把重采样过的样本当原始样本用。
+
 ## 测量出来的工作点
 
 | | 采样窗口 | 余辉 | 线宽 | 亮度 | 备注 |
@@ -94,11 +107,13 @@ E *= exp(-dt/τ)                     dt 取 performance.now() 真实差值，上
 - 光晕径向剖面（合成细线，光晕 100）：`10/18/28/40/55/75/100/130 px → 31/25/18/13/10/8/7/5`，单调、最陡一跳 7、无断崖；光晕 0 时 10 px 与 28 px 处严格为 0。
 - 光晕可见性（冻结窗口，oscillofun @20s 密集段）：旧幅度 0.9 时 100% 只把笔画以外抬 +2.58/255（等于看不见），现在 +11.85/255、亮 16 级以上的有 81558 像素、最大 +150；画面四角只抬 +3/255，所以是云不是整屏发灰。稀疏段（@72s）只有 +4.27/255，这是卷积的应有性质。
 - 消隐阈值（冻结同一窗口，15× 作参照 = 几乎不消隐）：10× 少画 4.0 / 5.3 / 0.4% 的亮像素（oscillofun @20s 方块 / @72s 穿梭 / primer @2:43 棋盘格），默认的 3× 少画 9.7 / 15.2 / 9.4%；多删的是 3–10× 束速那一段（快，但不明显是回扫），代价落在素材最快的真实扫掠上，穿梭段最敏感。
-- 采样率不重采样：与 ffmpeg 解码逐点比对最大差值 0；强制 48 kHz 后残差 −42 dB。
+- 采样率不重采样：与 ffmpeg 解码逐点比对，24 位与 32 位 PCM 最大差值 0，16 位 0.73 LSB（2.2e-5，−93 dBFS，大部分来自 int→float 的定标本身：这里是 32767，ffmpeg 是 32768）；强制 48 kHz 后残差 −42 dB。这份文档以前写的是"逐点比对最大差值 0"，重测不成立，改成本条。
+- 分析源（`原始样本`，默认开）：15 MB / 146 秒的 FLAC 在自己的 44.1 kHz `OfflineAudioContext` 里解码耗时 84 ms，得 6,438,600 帧、49.1 MB；同一条路径接受 44.1 / 96 / 192 kHz 三档采样率。元素 `.muted` 时元素采样读数为 0、文件样本 0.385、画面 7100 个亮像素；关掉开关后同一个静音是 0 个亮像素。上限：文件 128 MB、解码后预估 256 MB（270 MB 的 primer 就落在文件上限外，状态行写"文件太大"）。
+- 读取位置由音频时钟推进，元素播放头只用来校正：60 fps 下每帧 768 帧样本（正好 6 个 128 帧渲染量子），2 秒 121 帧里 0 次倒退、0 次不动。Chromium 的 `currentTime` 实测每帧都在动（10–17 ms 一步，无重复），但规范只保证到几百毫秒，所以没让画面跟着它走。
 
 ## 设置与预设
 
-`core.js DEFAULTS` 是唯一真源；`PRESET_KEYS` 排除 `rateMode` 与 `renderScale`（描述机器，不描述画面）。预设存在 `localStorage` 的 `scope.presets.v1`，导出格式 `{kind:'oscilloscope-presets', v:1, presets:[...]}`，导入会按控件的 min/max/step 夹取，名字撞车自动让步。两种模式：自动按曲记忆（默认）与手动，两种模式都记录每首歌的参数。
+`core.js DEFAULTS` 是唯一真源；`PRESET_KEYS` 排除 `rateMode`、`renderScale`（描述机器）与 `pcm`（描述样本从哪来，是浏览器和文件的事实，不是画面）。预设存在 `localStorage` 的 `scope.presets.v1`，导出格式 `{kind:'oscilloscope-presets', v:1, presets:[...]}`，导入会按控件的 min/max/step 夹取，名字撞车自动让步。两种模式：自动按曲记忆（默认）与手动，两种模式都记录每首歌的参数。
 
 只在一条路径上有效的两个滑块会置灰并把原因写进 `title`（`apply.js rendererOnlyRow`）：`残留` 只在 8 位路径，`光晕` 只在 WebGL。`X 反向` / `Y 反向` 是内容属性（素材手性），跟着每首歌记录，翻转时增益读数带负号。
 
@@ -107,8 +122,8 @@ E *= exp(-dt/τ)                     dt 取 performance.now() 真实差值，上
 ## 调试工具
 
 - **帧日志**：`⇧L` 或 `__scope.perf()` / `__scope.perf(60)`。环形 8192 帧（约 2.3 分钟）、200 条事件。给出中位/p90/p99/p99.9/最差、1% 与 0.1% low、超 20/33/50 ms 计数，以及最差几帧的年龄、线段数、光晕开关、是否刚 resize。被浏览器拉长到整秒的帧（隐藏标签页把 rAF 节流到 ~1 Hz）单独计数，并从"去掉被拉长的帧后"的分布里排除。
-- **掉音看门狗**：跑在独立的 250 ms 定时器上（不能挂在 rAF 上，隐藏标签页会把 rAF 节流到 1 Hz，那正好是掉音会藏起来的状态）。它记 `音频时钟落后 X ms`（墙上时间减去 `AudioContext.currentTime`，只在整个音频图真的在渲染时前进，所以掉音不触发任何 DOM 事件也能被抓到）、`信号静默`（在播放但分析器全 0）、`音频上下文` 状态变化、`长任务`（Firefox 的 longtask 条目）、`页面 freeze` / `可见性`。时钟归零会单独报成"音频上下文重建（换采样率）"，不是掉音。
-- **`window.__scope`**：`state`、`perf(n)`、`readTrace(x,y,w,h)`、`readAnalyser()`、`setRateMode()`。
+- **掉音看门狗**：跑在独立的 250 ms 定时器上（不能挂在 rAF 上，隐藏标签页会把 rAF 节流到 1 Hz，那正好是掉音会藏起来的状态）。它记 `音频时钟落后 X ms`（墙上时间减去 `AudioContext.currentTime`，只在整个音频图真的在渲染时前进，所以掉音不触发任何 DOM 事件也能被抓到）、`信号静默`（在播放但画出来的峰值全是 0；读的是 `trace.peaks()`，也就是这一帧真正画的东西，所以分析源换了以后它跟着换，不会因为元素被静音就误报）、`音频上下文` 状态变化、`长任务`（Firefox 的 longtask 条目）、`页面 freeze` / `可见性`。时钟归零会单独报成"音频上下文重建（换采样率）"，不是掉音。
+- **`window.__scope`**：`state`、`perf(n)`、`readTrace(x,y,w,h)`、`readAnalyser()`、`readSignal()`（这一帧真正交给渲染器的那份样本）、`pcmSlice(start,n)`（解码缓冲里任意位置的原始帧）、`setRateMode()`。
 - **URL**：`?renderer=2d`、`?demo=1`、`?track=N`、`?play=1`。
 - 键盘：空格、方向键、`,` `.`、`D`、`F`、`S`、`L`、`M`、`P`、`⇧L`、`B`、`T`、`G`、`O`、`R`、`Esc`。这些曾经全是死的（`onKey` 拆模块时没被绑定），现在有测试盯着。
 
@@ -129,7 +144,7 @@ E *= exp(-dt/τ)                     dt 取 performance.now() 真实差值，上
 | 拆模块后启动即报 `rafId is not defined` | 循环状态被当成 trace 状态一起搬走 | 搬回去 |
 | 2D 路径残留擦除失效 | 暂停路径调了 `fadeStep()` 却丢掉返回的 alpha | 拆成 `requestWipe()` 与 `fadeStep()` |
 | 播放位置记不住（刷新后回到 0） | 节流的哨兵值写成 0："距上次写入" 在页面打开不足 5 秒时永远小于阈值，连 pause 的强制写入都被吞掉 | 哨兵改成 `-Infinity`，`flushPlayhead()` 才真的绕过节流；测试里就是刷新后立即暂停这个场景抓到它的 |
-| 音量拖到 0 画面全黑，标签页静音也全黑而播放条说在播 | `HTMLMediaElement.volume` / `.muted` 作用在 `MediaElementAudioSourceNode` **之前**，用它控制听感等于把分析器一起静音（实测 85% 时 RMS 0.098 / 亮 10110 像素 → 0 / 0） | 可听路径改走接在分析器之后的 `volGain`，元素永远音量 1、不静音；标签页静音应用解不开，所以静默 1.2 s 时弹话说明原因（`perf.js watchAudio`） |
+| 音量拖到 0 画面全黑，标签页静音也全黑而播放条说在播 | `HTMLMediaElement.volume` / `.muted` 作用在 `MediaElementAudioSourceNode` **之前**：Gecko 把元素的有效音量做在节点自己的输入轨上，Web Audio 1.22 也要求 volume 建节点后照常生效，节点内部没有乘之前的抽头 | 第一步：可听路径改走接在分析器之后的 `volGain`，元素永远音量 1、不静音。第二步（默认开）：分析改读文件自己的样本（`pcm.js`），元素被静音时画面照画；关掉开关后同一个静音立刻清空画面，两边都有测试 |
 
 ## 参考素材教了什么
 
@@ -144,7 +159,9 @@ E *= exp(-dt/τ)                     dt 取 performance.now() 真实差值，上
 ## 未完成
 
 - `docs/preview.png`、`docs/preview-primer.png`、`docs/preview-warp.png` 还是"光斑随剂量变宽、1/v 被压平"时期截的，观感偏旧；`docs/energy-vs-canvas.png` 与 `docs/ui.png` 是当前的。
-- `playlist.js`（469 行）里的客户端 `probeNativeRate` 还没拆，它和服务端的 `probe.js` 解析的是同一批容器，两边都改的时候容易只改一边。`test/sections/presets.js`（311）稍微超过 300 行，但整段就是一个功能，暂时不动。`presets.js`（415）与 `audio.js`（387）内聚，不建议动。
+- `playlist.js`（约 740 行）里的客户端 `probeNativeRate` 还没拆，它和服务端的 `probe.js` 解析的是同一批容器，两边都改的时候容易只改一边；给它加 WAV 时长那一条时就是两边一起改的。文件和 `audio.js`（约 430 行）都超过 300 行，但各自内聚（列表/播放 vs 音频图），暂时不动。`test/sections/presets.js`（311）同理。
+- 有损格式的解码器之间没有可比性：`pcmSlice` 和 ffmpeg 的逐点比对只对无损格式有意义，测试里用的就是那个 16 位 FLAC。32 位浮点 WAV 与 24 位 PCM 量到 0，16 位量到 0.73 LSB 并写进了文档。
+- 分析源在 `playbackRate !== 1` 时退回元素采样，所以变速播放时元素静音仍然会清空画面。想要变速也有原始样本，得自己做时域伸缩，不划算。
 - 一次"卡且没声音"没能稳定复现。已有日志抓到过两种情况：一是隐藏标签页的 rAF 被节流到 1 Hz（那不是卡顿），二是换采样率导致 AudioContext 重建（那不是掉音）。真正待抓的是 `音频时钟落后` 或 `音频上下文 → interrupted` 或 `页面 freeze`。复现时按 `⇧L` 把日志贴出来。
 - 裸 `.aac`（ADTS）与 `.webm/.weba`（EBML）没有解析，会退回设备采样率，也就是会被重采样。已知缺口。
 - 根目录有个未跟踪的 `package-lock.json`（本项目零依赖）。提交与否由用户决定，之前误提交过一次已回滚。
@@ -155,12 +172,12 @@ E *= exp(-dt/τ)                     dt 取 performance.now() 真实差值，上
 - 界面文案简短；文档不要"AI 味"：不加粗强调、不用引用块、不拿破折号当标点、不写"不是 X 而是 Y"。
 - 控件不许撒谎：拖得动就必须有用；只在一条路径上有效的会置灰并写明原因；读数要显示真正在用的值。
 - 长命令放后台跑（前台超时被 SIGTERM 会连带把同一会话里的进程一起带走，曾经把用户正在跑的服务器杀过）。不要 `pkill -f "node server.js"`，测试自己抢空闲端口。
-- 别留半成品；改完随手跑对应测试段，提交前跑全量（188 项）。
+- 别留半成品；改完随手跑对应测试段，提交前跑全量（198 项）。
 - 大于 300 行的文件考虑拆，拆分依据是失败方式而不是行数。
 
 ## 环境
 
 - 开发机 Apple M5 / 10 核，macOS 26.6，Firefox 36（用户日常浏览器）、Chromium（Playwright 驱动测试）。
 - 测试音轨在项目根目录但不进版本库（约 300 MB）：`oscillofun.flac`（44.1 kHz/16-bit）、`primer-final.flac`（192 kHz/24-bit）。
-- `ffmpeg`/`ffprobe` 可用（测试用它生成 m4a/aiff/aifc/caf/mp3/ogg 夹具，也用来左右拼接对比图）。Playwright 全局安装，`test/verify.js` 会自己找。
+- `ffmpeg`/`ffprobe` 可用（测试用它生成 m4a/aiff/aifc/caf/mp3/ogg 夹具，也用来左右拼接对比图；`--only=pcm` 那一段会把 `oscillofun.flac` 解成 `f32le` 和浏览器里那份逐点比）。Playwright 全局安装，`test/verify.js` 会自己找。
 - 仓库 https://github.com/CHT-1192/web-oscilloscope-music-player-visualizer ，许可 Apache-2.0。

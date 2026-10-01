@@ -6,8 +6,9 @@
 
     The engine is forced to the file's own rate, and the proof is spectral: a
     192 kHz file carries content above 30 kHz, which cannot exist at all once the
-    engine is moved to 48 kHz. The control run proves the band is really gone, so
-    the first check cannot pass by measuring nothing.
+    engine is moved to the device rate (44.1 or 48 kHz — measured, not assumed).
+    The control run proves the band is really gone, so the first check cannot
+    pass by measuring nothing.
    ========================================================================== */
 
 const path = require('node:path');
@@ -86,6 +87,17 @@ async function resampleTests(pw) {
   const state = () => page.evaluate(() => window.__scope.state);
   const capture = () => page.evaluate(() => window.__scope.readAnalyser());
 
+  /* What this machine's output actually runs at, measured on a blank page before
+     the app has opened a context at the file's own rate: an engine already
+     running at 192 kHz can change what a later default context reports, and the
+     control run below has to know the real answer rather than a remembered one. */
+  const deviceRate = await page.evaluate(async () => {
+    const c = new AudioContext();
+    const r = c.sampleRate;
+    await c.close();
+    return r;
+  });
+
   /* The first ~3 s of this FLAC are digital silence, so always land on a solidly
      loud passage — otherwise a band measurement just reads the noise floor. */
   const playAt = async (url, seekTo) => {
@@ -125,22 +137,32 @@ async function resampleTests(pw) {
     bad('ultrasonic content (>30 kHz) reaches the analyser intact', JSON.stringify(ultraNative));
   }
 
-  /* ---- control: force the device rate; Nyquist now cuts that band off ---- */
+  /* ---- control: force the device rate; Nyquist now cuts that band off ----
+     The rate is whatever the machine runs at, so it was measured above rather
+     than assumed. It used to be a hardcoded 48 kHz, which turned into a false
+     failure the moment this ran on a machine whose output is 44.1 kHz — the
+     engine had done exactly what it was asked. */
   await page.evaluate(() => window.__scope.setRateMode('device'));
   await page.waitForTimeout(3000);
   st = await state();
-  if (st.engineRate === 48000) ok('forcing "device" moves the engine to 48 kHz');
-  else bad('forcing "device" moves the engine to 48 kHz', `${st.engineRate} Hz`);
+  /* The control below only means something if the device rate really puts 30 kHz
+     past Nyquist; saying that out loud beats a hardcoded number. */
+  const cuts = deviceRate / 2 < 30000;
+  if (st.engineRate === deviceRate && cuts) {
+    ok('forcing "device" moves the engine to the device rate', `${st.engineRate} Hz`);
+  } else {
+    bad('forcing "device" moves the engine to the device rate', `engine ${st.engineRate}, device ${deviceRate}`);
+  }
 
   cap = await capture();
-  const ultraDevice = bandDb(cap.L, 30000, 88000, 48000);
+  const ultraDevice = bandDb(cap.L, 30000, 88000, st.engineRate);
   if (ultraDevice.bins === 0 || ultraDevice.db === -Infinity) {
-    ok('control: at 48 kHz that band cannot exist at all', 'beyond Nyquist — zero bins');
+    ok('control: at the device rate that band cannot exist at all', `${st.engineRate} Hz — beyond Nyquist, zero bins`);
   } else if (ultraDevice.db < ultraNative.db - 30) {
-    ok('control: at 48 kHz that content is gone',
+    ok('control: at the device rate that content is gone',
       `${ultraDevice.db.toFixed(1)} dB vs ${ultraNative.db.toFixed(1)} dB`);
   } else {
-    bad('control: at 48 kHz that content is gone', `${ultraDevice.db} dB vs ${ultraNative.db} dB`);
+    bad('control: at the device rate that content is gone', `${ultraDevice.db} dB vs ${ultraNative.db} dB`);
   }
 
   const badge2 = await page.evaluate(() => document.getElementById('rateBadge').textContent);

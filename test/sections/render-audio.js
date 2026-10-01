@@ -59,12 +59,18 @@ async function audio(ctx) {
   else bad('live trace is drawn from the audio file', `${live} lit pixels`);
 
   /* ---- the picture must not depend on the listening level ----------------
-     HTMLMediaElement.volume and .muted are applied BEFORE
-     MediaElementAudioSourceNode, so anything that sets them for playback
-     silences the analysis too. That is exactly what happened: 音量 0 blanked the
-     scope, and a tab muted by the browser did the same with the transport still
-     saying "playing". The audio path now uses a GainNode below the analysers and
-     leaves the element at 1/unmuted, so both of these have to hold. */
+     The app's own level lives in a GainNode BELOW the analysers, so 音量 0 must
+     leave the picture alone (checked below). The element's own volume and .muted
+     are a different story: they are applied before MediaElementAudioSourceNode,
+     so anything that writes them silences the analysis too. That is why the
+     shipped path reads the file's own samples. These two checks are about the
+     ELEMENT TAP, so they run with 原始样本 switched off — with it on, a mute must
+     NOT blank anything, and test/sections/pcm.js checks that side. */
+  await page.evaluate(() => {
+    const b = document.querySelector('[data-toggle="pcm"]');
+    if (b && b.getAttribute('aria-pressed') === 'true') b.click();
+  });
+  await page.waitForTimeout(400);
   const rmsNow = () => page.evaluate(() => {
     const a = window.__scope.readAnalyser();
     const r = (x) => Math.sqrt(x.reduce((s, v) => s + v * v, 0) / x.length);
@@ -120,6 +126,11 @@ async function audio(ctx) {
   } else {
     bad('an element at volume 0 is reported the same way', zeroVolText);
   }
+  // back to the shipped default for the rest of the section
+  await page.evaluate(() => {
+    const b = document.querySelector('[data-toggle="pcm"]');
+    if (b && b.getAttribute('aria-pressed') === 'false') b.click();
+  });
   await page.waitForTimeout(900);
 
   await page.screenshot({ path: path.join(SHOTS, 'live-audio.png') });

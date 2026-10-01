@@ -1,4 +1,5 @@
 import * as core from './core.js';
+import * as pcm from './pcm.js';
 
 /* The audio graph: one AudioContext whose sample rate is matched to the file,
    two analysers fed by a channel splitter, and the built-in demo oscillators.
@@ -24,11 +25,15 @@ const {
     *device* rate (48 kHz on most machines), so a 192 kHz FLAC would be
     resampled down and everything above 24 kHz thrown away.
 
-    Verified against an independent ffmpeg decode of the bundled FLAC: when
-    the context rate equals the file's own rate, the analyser returns the
-    file's samples BIT-FOR-BIT (residual exactly 0, max|diff| 0). So by
-    default the context is built at the source's native rate and nothing is
-    resampled on the visual path.
+    When the context rate equals the file's own rate, nothing resamples on the
+    way in and the analyser returns the file's own samples. Measured against an
+    independent ffmpeg decode of the bundled FLAC: max|diff| 0 for 24- and
+    32-bit PCM, 0.73 LSB (2.2e-5, -93 dBFS) for 16-bit, most of which is the
+    int->float scale itself (32767 here, 32768 in ffmpeg). An earlier version of
+    this comment claimed max|diff| 0 for that file; re-measured, that does not
+    hold, and the bound above is the one that does. So by default the context is
+    built at the source's native rate and nothing is resampled on the visual
+    path.
 
     (The OS still resamples the final output for your speakers. That is
     unavoidable — the device runs at 48 kHz — and it cannot affect what is
@@ -333,7 +338,27 @@ function setDemoSource(on) {
 
 
 
+/* ---------------------------------------------------- which samples get read */
+
+/* Two analysis sources, one contract. 'pcm' is the file's own samples, decoded
+   by pcm.js and therefore out of reach of any volume; 'media' is the element
+   tap, which is what the picture came from before and still does when the
+   switch is off, when the file is too big to decode, or at a playback speed
+   other than 1 — a time-stretched waveform is something only the element has. */
+function pcmSource() {
+  if (!S.pcm || !ac || source === 'demo') return null;
+  if (dom.audio.playbackRate !== 1) return null;
+  const s = pcm.status();
+  return s.active ? s : null;
+}
+
 function readSignal() {
+  if (pcmSource()) {
+    const el = dom.audio;
+    pcm.advance(ac.currentTime, el.currentTime || 0, !el.paused && !el.ended, !!el.seeking);
+    pcm.fill(viewL, viewR, analyserSize);
+    return true;
+  }
   const a = currentAnalysers();
   if (!a) return false;
   if (useFloat) {
@@ -366,21 +391,45 @@ const isDemo = () => source === 'demo';
 /** loadTrack knows the file's native rate before the engine does. */
 function setSourceRate(rate) { sourceRate = rate || 0; }
 
+/** Read this track's own samples for the analysis path. Asynchronous and never
+    awaited: until the decode lands the element tap keeps painting, and it keeps
+    painting for ever if the decode never lands. */
+const loadPcmSamples = (track) => pcm.load(track);
+function dropPcmSamples() {
+  pcm.clear();
+  flags.redraw = true;
+}
+/** Raw frames at an absolute offset — the tests compare these against an
+    independent decode. The renderer never calls it. */
+const pcmSlice = (start, n) => pcm.slice(start, n);
+
 /** Buffers WITHOUT re-reading the analysers. A paused <audio> element reports
     silence, so the renderer keeps painting the last captured window instead. */
-const signal = () => ({ L: bufL, R: bufR, capacity: analyserSize, float: useFloat });
+const signal = () => ({ L: bufL, R: bufR, capacity: analyserSize, float: useFloat || !!pcmSource() });
 
 /** Everything the debug seam and the rate badge need to know. */
-const status = () => ({
-  engineRate: ac ? ac.sampleRate : 0,
-  contextState: ac ? ac.state : 'none',
-  clockMs: ac ? ac.currentTime * 1000 : 0,   // advances only while the graph runs
-  sourceRate,
-  analyserSize,
-  source,
-  wanted: engineWanted,
-  dead: audioDead,
-});
+const status = () => {
+  const p = pcm.status();
+  return {
+    engineRate: ac ? ac.sampleRate : 0,
+    contextState: ac ? ac.state : 'none',
+    clockMs: ac ? ac.currentTime * 1000 : 0,   // advances only while the graph runs
+    sourceRate,
+    analyserSize,
+    source,
+    wanted: engineWanted,
+    dead: audioDead,
+    pcm: {
+      ...p,
+      enabled: !!S.pcm,
+      usable: !!pcmSource(),
+      rateLimited: dom.audio.playbackRate !== 1,
+      /* Carried out so the status line and the tests can name the limit that was
+         hit instead of just saying a file was too big. */
+      limits: { file: pcm.MAX_FILE, decoded: pcm.MAX_DECODED },
+    },
+  };
+};
 
 export {
   applyAnalyserSize,
@@ -390,11 +439,14 @@ export {
   clampRate,
   currentAnalysers,
   desiredRate,
+  dropPcmSamples,
   ensureEngineRate,
   ensureGraph,
   isDemo,
   isLive,
+  loadPcmSamples,
   makeAnalyser,
+  pcmSlice,
   rateText,
   readSignal,
   resumeContext,

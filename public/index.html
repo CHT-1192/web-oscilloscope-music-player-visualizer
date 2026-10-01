@@ -93,6 +93,10 @@
             <option value="384000">384 kHz</option>
           </select>
         </div>
+        <div class="pills">
+          <button type="button" class="pill" data-toggle="pcm" title="分析直接读浏览器解码出的文件原始采样点，不经过播放元素 —— 元素音量、元素静音、浏览器标签静音都影响不到画面。文件太大或采样率未知时自动退回元素采样；播放速度不是 1 时也退回，因为变速后的波形只有元素有">原始样本</button>
+          <span class="note" id="pcmNote"></span>
+        </div>
       </section>
 
       <section class="group">

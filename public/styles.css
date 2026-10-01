@@ -520,6 +520,15 @@ input[type="range"]::-moz-range-thumb {
   color: var(--accent);
   background: var(--accent-wash);
 }
+/* Where a switch has something to say about the value actually in use: 原始样本
+   falls back to the element tap on some files, and the switch alone would then be
+   claiming something that is not happening. */
+.pills .note {
+  align-self: center;
+  font-size: 11.5px;
+  color: var(--muted-dim);
+  line-height: 1.3;
+}
 
 .ghost {
   appearance: none;

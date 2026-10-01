@@ -19,6 +19,7 @@ const {
   clamp,
   dom,
   flags,
+  fmtBytes,
   fmtTime,
   stamp,
   toast,
@@ -59,7 +60,21 @@ const {
 } = playlist;
 
 const uiCache = { cur: -1, dur: -1, seek: -1 };
+/* The 原始样本 switch needs a second line, because on some files it is on and
+   still not the source in use — the picture would then be coming from the
+   element tap while the switch says otherwise. Name the one that is running. */
+function updatePcmNote() {
+  const el = dom.pcmNote;
+  if (!el) return;
+  const p = audio.status().pcm;
+  const text = !p.enabled ? '元素采样'
+    : p.usable ? `原始样本 · ${fmtBytes(p.bytes)}`
+      : `元素采样（${p.reason || (p.rateLimited ? '变速中' : '未就绪')}）`;
+  if (el.textContent !== text) el.textContent = text;
+}
+
 function updateTransportUI() {
+  updatePcmNote();
   const a = dom.audio;
   const cur = Number.isFinite(a.currentTime) ? a.currentTime : 0;
   const dur = Number.isFinite(a.duration) ? a.duration : 0;
