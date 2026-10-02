@@ -77,13 +77,27 @@ async function blanking(ctx) {
       el.value = String(c.threshold);
       el.dispatchEvent(new Event('input', { bubbles: true }));
     }, { ratio, threshold });
-    await page.waitForTimeout(1700);
-    return centreAlpha();
+    /* The 8-bit path wipes its quantisation floor every 180 frames (~3 s), so a
+       single read lands at a random phase of that cycle: the same scene measured
+       61 alpha once and 10 the next time. Poll past one full cycle and keep the
+       brightest — the question is whether the segment is drawn at all. */
+    let best = 0;
+    for (let i = 0; i < 5; i++) {
+      await page.waitForTimeout(800);
+      const a = await centreAlpha();
+      if (a > best) best = a;
+    }
+    return best;
   };
 
   const thrKept = await runAt(8, 12);          // 8x, threshold 12x -> drawn
   const thrDropped = await runAt(8, 5);        // 8x, threshold  5x -> blanked
-  if (thrKept > 12 && thrDropped === 0) {
+  /* The floor is a PRESENCE test, not a brightness one: the dropped case is
+     exactly 0, and the kept case is the 1/v deposit of a segment 8x faster than
+     the mean, which is dim by construction. It read 20 alpha while every segment
+     also deposited its neighbours' round caps at the joint; with the path
+     deposited once (see render-stroke.js) it is 10, which is the honest number. */
+  if (thrKept > 5 && thrDropped === 0) {
     ok('blanking threshold is the number the slider says',
       `8x kept at a 12x threshold (alpha ${thrKept}), dropped at 5x`);
   } else {
@@ -94,7 +108,7 @@ async function blanking(ctx) {
      they cluster (slow stroke, fast retrace) with a gap in between, so past the
      top of the gap the slider does nothing at all. Hence 1x-15x, not 1x-30x. */
   const thrEdge = await runAt(12, 15);         // 12x, threshold 15x -> drawn
-  if (thrEdge > 12) ok('15x is wide enough to readmit a 12x retrace', `alpha ${thrEdge}`);
+  if (thrEdge > 5) ok('15x is wide enough to readmit a 12x retrace', `alpha ${thrEdge}`);
   else bad('15x is wide enough to readmit a 12x retrace', `alpha ${thrEdge}`);
 
   const slider = await page.evaluate(() => {

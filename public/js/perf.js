@@ -180,11 +180,14 @@ function recordWork(ms) {
   if (workFilled < WORK_RING.length) workFilled++;
 }
 
+/** Clear the ring the work numbers are derived from. The smoothed values
+    themselves (workAvg / workP50) belong to render.js, which resets them in its
+    own resetWorkStats — this function used to assign to them from here, which in
+    a module is a ReferenceError (strict mode): `__scope.resetWorkStats` threw
+    and test/bench.js, which calls it before every sample, could not run at all. */
 function resetWorkStats() {
   workPos = 0;
   workFilled = 0;
-  workAvg = 0;
-  workP50 = 0;
 }
 
 function workSorted() {

@@ -19,6 +19,7 @@
 const h = require('../harness.js');
 const { ok, bad, section, findChromium } = h;
 const { SYNTH } = require('./render-synth.js');
+const { stroke } = require('./render-stroke.js');
 const blanking = require('./render-blanking.js');
 const halo = require('./render-halo.js');
 const model = require('./render-model.js');
@@ -89,6 +90,8 @@ async function renderTests(pw, rq = '') {
     };
   }, mode);
   const doseOf = () => page.evaluate(() => window.__scope.state.doseMax);
+  /* Returns the promise, so a scene that needs the control to have landed can
+     await it — the slider's own handler is synchronous, this is the round trip. */
   const setCtl = (key, v) => page.evaluate(([k, val]) => {
     const el = document.querySelector(`[data-set="${k}"]`);
     el.value = String(val);
@@ -104,6 +107,7 @@ async function renderTests(pw, rq = '') {
   await model(ctx);
   await axes(ctx);
   await profile(ctx);
+  await stroke(ctx);
   await audio(ctx);
   await surface(ctx);
   await theme(ctx);

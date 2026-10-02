@@ -1,12 +1,12 @@
 # 交接文档 / 上下文压缩
 
-截至「原始样本」那一版（`pcm.js` 加入，全套 199 项）。这份文档的作用是替代之前几轮对话：里面是结论、常量和没做完的事，不是过程。
+截至「原始样本」那一版（`pcm.js` 加入，全套 205 项）。这份文档的作用是替代之前几轮对话：里面是结论、常量和没做完的事，不是过程。
 
 ## 运行与检查
 
 ```bash
 node server.js --open      # http://127.0.0.1:10240（默认端口，-p 改，PORT 环境变量也行）
-node test/verify.js        # 199 项端到端验证；--only=port|http|render|presets|playlist|resample|pcm|standalone 可只跑一段
+node test/verify.js        # 205 项端到端验证；--only=port|http|render|presets|playlist|resample|pcm|standalone 可只跑一段
 node build-standalone.js   # 改完 public/ 后重新生成单文件版
 node test/bench.js         # 性能基准
 ```
@@ -30,7 +30,7 @@ public/js/pcm.js       文件自己那份样本：OfflineAudioContext 解码、�
 public/js/shaders.js   GLSL 源码
 public/js/gl.js        能量渲染器：浮点累积、色调映射、halation pass
 public/js/perf.js      帧间隔环、工作耗时环、掉音看门狗、长任务/生命周期
-public/js/trace.js     采样→像素、1/束速剂量、两条累积路径
+public/js/trace.js     采样→像素、1/束速剂量、两条累积路径、停住的束流画成点
 public/js/render.js    几何、刻度、帧循环、画质调节、对外接口
 public/js/apply.js     设置对象 ↔ 控件/引擎/画面
 public/js/presets.js   预设、按曲记忆、导入导出
@@ -42,9 +42,10 @@ probe.js               音频头解析（WAV/FLAC/AIFF/CAF/MP4/Ogg/MP3），只�
 build-standalone.js    把同一批模块内联成单文件
 test/verify.js         测试入口：分配端口、起服务器、按 key 顺序跑各段
 test/harness.js        断言与计数、HTTP 客户端、起服务器、找 Playwright/Chromium
-test/sections/*.js     199 项按失败方式分段：port、http、render-synth、render（会话驱动）、
+test/sections/*.js     205 项按失败方式分段：port、http、render-synth、render（会话驱动）、
                        render-blanking/halo/model/axes/profile/audio/surface/theme/webgl-absent、
-                       presets、playlist、resample、pcm、standalone；test/bench.js 性能基准
+                       render-stroke（笔画只沉积一次 / 停住的束流是点）、presets、playlist、
+                       resample、pcm、standalone；test/bench.js 性能基准
 ```
 
 依赖单向无环：`core → pcm / shaders`，`pcm → audio`，`shaders → gl`，然后 `{audio, gl, perf, trace} → render → apply → presets → playlist → ui → main`。模块之间只用命名空间调用（`audio.isLive()`）或顶部解构出的别名，禁止跨模块裸变量。拆分的依据是失败方式：GLSL 写错是驱动编译错，perf 写错是日志数字不对，trace 写错是画面不对。
@@ -68,8 +69,10 @@ E *= exp(-dt/τ)                     dt 取 performance.now() 真实差值，上
 | 曝光 | `intensity · 0.19` | `trace.js exposureFor` |
 | 光斑 σ | `lineWidth · DPR · 0.5`，恒定，不随剂量变 | `trace.js sigmaFor` |
 | 光斑轮廓 | 高斯减去 3σ 处的值，即 3σ 外严格为 0 | `shaders.js FRAG_BEAM` |
+| 沉积形状 | 到线段最近点的圆盘：横截面是上面的高斯，两端靠「每段外扩」决定 | 同上 |
 | 剂量 | `ref / (s + plot·2e-5)`，`ref` 为平滑后的平均步长（下限 `plot·0.0004`） | `trace.js drawTrace` |
 | 剂量平滑 | 沿路径 ±3 采样点取平均（磷酸粉在光斑宽度上积分） | 同上 |
+| 每段外扩 | `段长 < 2σ ? 3σ : 0`（长段首尾相接，短段保留圆帽） | `shaders.js VERT_BEAM` |
 | τ | `-1/60/ln(1-a)`，`a = (1-p/100)²·0.97+0.03` | `trace.js tauFor` |
 | 段上限 | 32768 段，每段 5 个 float | `gl.js` |
 
@@ -109,6 +112,8 @@ E *= exp(-dt/τ)                     dt 取 performance.now() 真实差值，上
 - 消隐阈值（冻结同一窗口，15× 作参照 = 几乎不消隐）：10× 少画 4.0 / 5.3 / 0.4% 的亮像素（oscillofun @20s 方块 / @72s 穿梭 / primer @2:43 棋盘格），默认的 3× 少画 9.7 / 15.2 / 9.4%；多删的是 3–10× 束速那一段（快，但不明显是回扫），代价落在素材最快的真实扫掠上，穿梭段最敏感。
 - 采样率不重采样：与 ffmpeg 解码逐点比对，24 位与 32 位 PCM 最大差值 0，16 位 0.73 LSB（2.2e-5，−93 dBFS，大部分来自 int→float 的定标本身：这里是 32767，ffmpeg 是 32768）；强制 48 kHz 后残差 −42 dB。这份文档以前写的是"逐点比对最大差值 0"，重测不成立，改成本条。
 - 分析源（`原始样本`，默认开）：15 MB / 146 秒的 FLAC 在自己的 44.1 kHz `OfflineAudioContext` 里解码耗时 84 ms，得 6,438,600 帧、49.1 MB；同一条路径接受 44.1 / 96 / 192 kHz 三档采样率。元素 `.muted` 时元素采样读数为 0、文件样本 0.385、画面 7100 个亮像素；关掉开关后同一个静音是 0 个亮像素。上限：文件 128 MB、解码后预估 256 MB（270 MB 的 primer 就落在文件上限外，状态行写"文件太大"）。
+- 笔画沉积：合成圆（512 样本/圈）上周期等于一个采样的梳状，旧的「每段都带 3σ 圆帽」在 DPR 2 时量到 13.1/255（占均值 13.8%），两侧相邻频率 0.11/0.92；DPR 1 的测试场景里 5.45 对 0.37/0.22。改成「比光斑长的段正好停在自己两端」之后是 0.01（8 位路径 0.05，本来就平）。
+- 停住的束流：零长度子路径浏览器不画（Chromium 实测 0 像素，0.01 px 的段画 12 像素），所以数字静音那种整窗同一点的情况两条路径都是空屏。现在能量路径给退化段一个轴向（圆点，峰值 255、6×5 px），8 位路径显式填圆点（峰值 147、2×2 px）。
 - 读取位置由音频时钟推进，元素播放头只用来校正：60 fps 下每帧 768 帧样本（正好 6 个 128 帧渲染量子），2 秒 121 帧里 0 次倒退、0 次不动。Chromium 的 `currentTime` 实测每帧都在动（10–17 ms 一步，无重复），但规范只保证到几百毫秒，所以没让画面跟着它走。
 
 ## 设置与预设
@@ -144,6 +149,9 @@ E *= exp(-dt/τ)                     dt 取 performance.now() 真实差值，上
 | 拆模块后启动即报 `rafId is not defined` | 循环状态被当成 trace 状态一起搬走 | 搬回去 |
 | 2D 路径残留擦除失效 | 暂停路径调了 `fadeStep()` 却丢掉返回的 alpha | 拆成 `requestWipe()` 与 `fadeStep()` |
 | 播放位置记不住（刷新后回到 0） | 节流的哨兵值写成 0："距上次写入" 在页面打开不足 5 秒时永远小于阈值，连 pause 的强制写入都被吞掉 | 哨兵改成 `-Infinity`，`flushPlayhead()` 才真的绕过节流；测试里就是刷新后立即暂停这个场景抓到它的 |
+| 笔画是一串珠子，每个采样接缝上鼓一个点 | 每段的沉积是「线段最近点的 3σ 圆盘」，而每段的四边形都越过自己的两端，于是相邻两段在接缝上各叠一份：接缝处是局部速率的两倍，周期正好一个采样 | 比光斑长的段不再外扩，首尾相接（`shaders.js VERT_BEAM` 里 `len < 2σ ? 3σ : 0`，是沉积自己的性质，所以规则放在着色器里，不占实例数据）；比光斑短的段保留圆帽，那是束流停留时该有的亮点。梳状从 5.45/255 降到 0.01，回归检查在 `render-stroke.js` |
+| 数字静音整屏是空的（两条路径） | 窗口里所有采样都落在同一点，段长为零；能量路径取方向时 `seg/len` 得到 (0,0)、四边形退化成一点，8 位路径画的是零长度子路径，浏览器不画 | 能量路径给退化段一个轴向，8 位路径显式填一个圆点（`paintInto`，含 blanking 关闭时的单折线分支） |
+| `node test/bench.js` 一跑就崩：`workAvg is not defined` | `perf.js` 的 `resetWorkStats` 顺手把 `workAvg`/`workP50` 清零，可这两个值住在 `render.js`；模块里给未声明的名字赋值就是 ReferenceError（严格模式），所以 `__scope.resetWorkStats` 抛异常，而 bench 每个样本前都会调它 | `perf.js` 只清自己的环，`render.js` 有同名函数清自己的平滑值并叫 perf 清环；bench 现在能跑完（默认窗口下工作耗时低于 Chrome 100 µs 的时钟量化，所以 trim25 常是 0，那是这个基准本身的局限） |
 | 音量拖到 0 画面全黑，标签页静音也全黑而播放条说在播 | `HTMLMediaElement.volume` / `.muted` 作用在 `MediaElementAudioSourceNode` **之前**：Gecko 把元素的有效音量做在节点自己的输入轨上，Web Audio 1.22 也要求 volume 建节点后照常生效，节点内部没有乘之前的抽头 | 第一步：可听路径改走接在分析器之后的 `volGain`，元素永远音量 1、不静音。第二步（默认开）：分析改读文件自己的样本（`pcm.js`），元素被静音时画面照画；关掉开关后同一个静音立刻清空画面，两边都有测试 |
 
 ## 参考素材教了什么
@@ -158,7 +166,7 @@ E *= exp(-dt/τ)                     dt 取 performance.now() 真实差值，上
 
 ## 未完成
 
-- `docs/preview.png`、`docs/preview-primer.png`、`docs/preview-warp.png` 还是"光斑随剂量变宽、1/v 被压平"时期截的，观感偏旧；`docs/energy-vs-canvas.png` 与 `docs/ui.png` 是当前的。
+- `docs/preview.png`、`docs/preview-primer.png`、`docs/preview-warp.png` 还是"光斑随剂量变宽、1/v 被压平"时期截的，观感偏旧；`docs/energy-vs-canvas.png` 是笔画串珠修掉之前截的，左边比现在亮几个百分点（同一场景的亮像素占比 13.29% → 12.76%，笔画均值亮度 -6%），要重拍得把 22.5 秒那一帧重新冻一次；`docs/ui.png` 是当前的。
 - `playlist.js`（约 740 行）里的客户端 `probeNativeRate` 还没拆，它和服务端的 `probe.js` 解析的是同一批容器，两边都改的时候容易只改一边；给它加 WAV 时长那一条时就是两边一起改的。文件和 `audio.js`（约 430 行）都超过 300 行，但各自内聚（列表/播放 vs 音频图），暂时不动。`test/sections/presets.js`（311）同理。
 - 有损格式的解码器之间没有可比性：`pcmSlice` 和 ffmpeg 的逐点比对只对无损格式有意义，测试里用的就是那个 16 位 FLAC。32 位浮点 WAV 与 24 位 PCM 量到 0，16 位量到 0.73 LSB 并写进了文档。
 - 分析源在 `playbackRate !== 1` 时退回元素采样，所以变速播放时元素静音仍然会清空画面。想要变速也有原始样本，得自己做时域伸缩，不划算。
@@ -172,7 +180,7 @@ E *= exp(-dt/τ)                     dt 取 performance.now() 真实差值，上
 - 界面文案简短；文档不要"AI 味"：不加粗强调、不用引用块、不拿破折号当标点、不写"不是 X 而是 Y"。
 - 控件不许撒谎：拖得动就必须有用；只在一条路径上有效的会置灰并写明原因；读数要显示真正在用的值。
 - 长命令放后台跑（前台超时被 SIGTERM 会连带把同一会话里的进程一起带走，曾经把用户正在跑的服务器杀过）。不要 `pkill -f "node server.js"`，测试自己抢空闲端口。
-- 别留半成品；改完随手跑对应测试段，提交前跑全量（199 项）。
+- 别留半成品；改完随手跑对应测试段，提交前跑全量（205 项）。
 - 大于 300 行的文件考虑拆，拆分依据是失败方式而不是行数。
 
 ## 环境

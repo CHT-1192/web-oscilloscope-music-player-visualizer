@@ -37,6 +37,8 @@ const SEGR = new Float32Array(MAXN);   // raw per-sample step, in pixels
    one full scan per brightness level. */
 const BUCKET_IDX = new Int32Array(BUCKETS * MAXN);
 const BUCKET_N = new Int32Array(BUCKETS);
+/* Parked-beam dots, collected per bucket before being filled (see paintInto). */
+const DOTS = new Float32Array(MAXN * 2);
 
 let refSpeed = 0;        // smoothed mean beam speed, the 1/v blanking reference
 let agGain = 1;          // auto-gain (applied to BOTH axes to keep the figure's shape)
@@ -351,14 +353,27 @@ function paintInto(ctx, n, base) {
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
   ctx.strokeStyle = S.color;
+  ctx.fillStyle = S.color;
 
   if (!S.blanking) {
     // Plain beam path: one continuous polyline, never closed.
     ctx.globalAlpha = clamp(base, 0, 1);
     ctx.beginPath();
     ctx.moveTo(PX[0], PY[0]);
-    for (let i = 1; i < n; i++) ctx.lineTo(PX[i], PY[i]);
+    let moved = false;
+    for (let i = 1; i < n; i++) {
+      ctx.lineTo(PX[i], PY[i]);
+      if (PX[i] !== PX[i - 1] || PY[i] !== PY[i - 1]) moved = true;
+    }
     ctx.stroke();
+    /* A window that never moves is one point, and a zero-length subpath is
+       stroked as nothing — the same gap the bucketed path below has to work
+       around. Silence parks the beam, so it has to be a dot. */
+    if (!moved) {
+      ctx.beginPath();
+      ctx.arc(PX[0], PY[0], ctx.lineWidth * 0.5, 0, TAU);
+      ctx.fill();
+    }
     ctx.globalAlpha = 1;
     return;
   }
@@ -377,13 +392,34 @@ function paintInto(ctx, n, base) {
     ctx.globalAlpha = clamp(base * BUCKET_ALPHA * (b / (BUCKETS - 1)), 0, 1);
     ctx.beginPath();
     let prev = -2;
+    let dotN = 0, lastX = -1, lastY = -1;
     for (let k = 0; k < cnt; k++) {
       const si = BUCKET_IDX[base0 + k];
-      if (si !== prev + 1) ctx.moveTo(PX[si], PY[si]);   // contiguous runs skip the moveTo
-      ctx.lineTo(PX[si + 1], PY[si + 1]);
+      const ax = PX[si], ay = PY[si], bx = PX[si + 1], by = PY[si + 1];
+      /* A beam parked on one sample is a dot, and a dot has to be drawn as one:
+         a zero-length subpath is stroked as NOTHING (measured in Chromium: 0
+         pixels, while a 0.01 px segment draws 12), so digital silence — where
+         every sample of the window is the same point — used to come out as an
+         empty screen. Collected and filled as discs after the stroke, and
+         deduplicated, because silence parks thousands of samples on one pixel. */
+      if (ax === bx && ay === by) {
+        if (dotN === 0 || ax !== lastX || ay !== lastY) {
+          DOTS[dotN * 2] = ax; DOTS[dotN * 2 + 1] = ay;
+          lastX = ax; lastY = ay; dotN++;
+        }
+        prev = -2;
+        continue;
+      }
+      if (si !== prev + 1) ctx.moveTo(ax, ay);   // contiguous runs skip the moveTo
+      ctx.lineTo(bx, by);
       prev = si;
     }
     ctx.stroke();
+    for (let d = 0; d < dotN; d++) {
+      ctx.beginPath();
+      ctx.arc(DOTS[d * 2], DOTS[d * 2 + 1], ctx.lineWidth * 0.5, 0, TAU);
+      ctx.fill();
+    }
   }
   ctx.globalAlpha = 1;
 }

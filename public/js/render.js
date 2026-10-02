@@ -390,6 +390,15 @@ function loop(ts) {
     taught the beam. `settle` asks the afterglow to rebuild from scratch. */
 
 /** The quality governor restarts from scratch (used by "restore defaults"). */
+/** Forget the work-time history: the ring lives in perf.js, the smoothed values
+    that are read out of it live here. */
+function resetWorkStats() {
+  perf.resetWorkStats();
+  workAvg = 0;
+  workP50 = 0;
+  workStatCountdown = 30;
+}
+
 function resetQuality() { autoScale = 1; workAvg = 0; qualityCooldown = 120; }
 
 function resettle() { flags.settle = 100; flags.redraw = true; }
@@ -452,7 +461,6 @@ const {
   noteEvent,
   perfLog,
   recordWork,
-  resetWorkStats,
   workSorted,
   workStat,
   workTrimmed,

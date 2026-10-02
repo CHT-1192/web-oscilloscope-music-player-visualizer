@@ -58,13 +58,34 @@ vec2 toClip(vec2 p) {
 
 void main() {
   vec2 seg = aP1 - aP0;
-  float len = max(length(seg), 0.0001);
-  vec2 dir = seg / len;
+  float len = length(seg);
+  /* A degenerate segment has no direction of its own, and taking one from the
+     length (0/0) left the quad a single point: a beam parked on one sample — a
+     passage of digital silence, which is a real thing in this material — drew
+     NOTHING on the energy path while the 8-bit path drew its dot. Give it an
+     axis so it can be the ball it is. */
+  vec2 dir = len > 0.0001 ? seg / len : vec2(1.0, 0.0);
   vec2 nrm = vec2(-dir.y, dir.x);
   float sigma = uHalfWidth;
-  float reach = sigma * 3.0;                          // ~3σ covers the spot
+  /* How far the quad reaches past its ends is the difference between a stroke
+     and a string of beads, and it is a property of the deposit rather than of
+     the caller, so the rule lives here. The deposit is a disc of radius 3σ
+     around the NEAREST point of the segment: an end that is extended lays a full
+     disc on the joint, and when both neighbours do that the joint is deposited
+     twice, once per SAMPLE — that is the beading. A segment longer than the spot
+     therefore reaches exactly to its own ends, so that two neighbours share the
+     perpendicular edge through the joint and the path is deposited once. One
+     shorter than the spot is a beam that lingered, where the round cap is the
+     ball you are supposed to see. */
+  float reach = len < sigma * 2.0 ? sigma * 3.0 : 0.0;
+  /* Two different extents. ACROSS the path the quad always has to cover 3σ, or
+     the Gaussian cross-section has nowhere to live (and a reach of 0 there would
+     make the quad a zero-area sliver, which is how this first went wrong:
+     nothing was drawn at all). ALONG the path it covers the segment plus the cap
+     decided above. */
+  float wide = sigma * 3.0;
   vec2 along = dir * (len * 0.5 + reach);
-  vec2 across = nrm * reach;
+  vec2 across = nrm * wide;
   vec2 centre = (aP0 + aP1) * 0.5;
   vec2 p = centre + along * aCorner.x + across * aCorner.y;
 
