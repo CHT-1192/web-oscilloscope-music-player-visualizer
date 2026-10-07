@@ -68,6 +68,90 @@ async function model(ctx) {
   } else {
     bad('the keyboard shortcuts are bound', `${volBefore} → ${volAfter}`);
   }
+
+  /* Whose keyboard is it when something has focus? A slider keeps focus after
+     you drag it, and the guard used to treat any `input` as a text field, so
+     after touching 音量 or the seek bar EVERY shortcut was swallowed — space did
+     nothing until you clicked elsewhere. A reported bug, so it gets checks. */
+  const paused = () => page.evaluate(() => document.getElementById('audio').paused);
+  const leaveDemo = () => page.evaluate(() => {
+    if (window.__scope.state.source === 'demo') document.getElementById('btnDemo').click();
+    document.getElementById('audio').pause();
+    document.getElementById('volume').focus();
+  });
+  const backToDemo = () => page.evaluate(() => {
+    if (window.__scope.state.source === 'media') document.getElementById('btnDemo').click();
+  });
+
+  await leaveDemo();
+  await page.waitForTimeout(300);
+  const v0 = Number(await page.inputValue('#volume'));
+  await page.keyboard.press('ArrowUp');
+  await page.waitForTimeout(250);
+  const v1 = Number(await page.inputValue('#volume'));
+  if (Math.abs(v1 - v0 - 0.05) < 1e-6) {
+    ok('a focused slider no longer swallows the keys', `音量 ${v0} → ${v1} on ArrowUp with 音量 focused`);
+  } else {
+    bad('a focused slider no longer swallows the keys', `音量 ${v0} → ${v1} (wanted +0.05)`);
+  }
+
+  const wasPaused = await paused();
+  await page.keyboard.press(' ');
+  await page.waitForTimeout(500);
+  const nowPaused = await paused();
+  await page.keyboard.press(' ');                       // put the transport back
+  await page.waitForTimeout(400);
+  if (wasPaused === true && nowPaused === false) {
+    ok('space plays with a transport slider focused', '音量 focused → playing');
+  } else {
+    bad('space plays with a transport slider focused', `paused ${wasPaused} → ${nowPaused}`);
+  }
+
+  /* Text entry keeps the keyboard: the playlist filter is typed in, and a space
+     there is a space. */
+  await page.evaluate(() => { if (!document.getElementById('panelList').classList.contains('open')) document.getElementById('btnList').click(); });
+  await page.evaluate(() => { const el = document.getElementById('trackFilter'); el.value = ''; el.focus(); });
+  await page.waitForTimeout(250);
+  const pausedBeforeType = await paused();
+  await page.keyboard.type('a b');
+  await page.waitForTimeout(300);
+  const typed = await page.evaluate(() => document.getElementById('trackFilter').value);
+  if (typed === 'a b' && (await paused()) === pausedBeforeType) {
+    ok('a space while typing stays a space', `filter "${typed}", transport untouched`);
+  } else {
+    bad('a space while typing stays a space', `filter "${typed}", paused ${pausedBeforeType} → ${await paused()}`);
+  }
+  await page.evaluate(() => {
+    const el = document.getElementById('trackFilter');
+    el.value = '';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.blur();
+    if (document.getElementById('panelList').classList.contains('open')) document.getElementById('btnList').click();
+  });
+  await backToDemo();
+  await page.waitForTimeout(300);
+
+  /* A composing IME owns the keyboard — for a Pinyin user that space commits a
+     candidate — while an IME that is merely ENABLED reports the space as
+     'Process' and it is still a space. */
+  const strike = async (label, init, want) => {
+    await leaveDemo();
+    await page.waitForTimeout(250);
+    const before = await paused();
+    await page.evaluate((i) => {
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+      document.dispatchEvent(new KeyboardEvent('keydown', Object.assign({ bubbles: true, cancelable: true }, i)));
+    }, init);
+    await page.waitForTimeout(400);
+    const after = await paused();
+    if (before !== after) await page.evaluate(() => document.getElementById('audio').pause());
+    await backToDemo();
+    if ((before !== after) === want) ok(label, `paused ${before} → ${after}`);
+    else bad(label, `paused ${before} → ${after}, wanted ${want ? 'a toggle' : 'none'}`);
+  };
+  await strike('space with an enabled IME still plays', { key: 'Process', code: 'Space' }, true);
+  await strike('a composing space is left to the IME', { key: ' ', code: 'Space', isComposing: true }, false);
+  await strike('keyCode 229 is left to the IME', { key: ' ', code: 'Space', keyCode: 229 }, false);
 }
 
 module.exports = model;

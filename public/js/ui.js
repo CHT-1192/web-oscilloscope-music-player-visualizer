@@ -390,14 +390,43 @@ function screenshot() {
   }, 'image/png');
 }
 
+/* Which focused element owns the keyboard.
+   Text entry owns all of it: a space there is a space, and the playlist filter is
+   meant to be typed in. A RANGE does not. It keeps focus after you drag it, and
+   the guard here used to match `input` of ANY kind, so after touching 音量 or the
+   seek bar every shortcut was swallowed — space did nothing at all until you
+   clicked somewhere else. A slider does use its arrows (and Home/End/Page), so
+   those stay with it: never take a key the focused control uses, never swallow
+   one it does not. */
+const SLIDER_KEYS = /^(Arrow(Left|Right|Up|Down)|Home|End|Page(Up|Down))$/;
+function ownsKeyboard(el, key) {
+  if (!el) return false;
+  if (el.isContentEditable) return true;
+  const tag = el.tagName;
+  if (tag === 'TEXTAREA' || tag === 'SELECT') return true;
+  if (tag !== 'INPUT') return false;
+  if (el.type !== 'range') return true;
+  /* A slider owns its arrows, with one exception: 音量 and the seek bar are the
+     transport, and their arrows are the documented shortcut (⇧5 s / ±0.05). */
+  if (el === dom.volume || el === dom.seek) return false;
+  return SLIDER_KEYS.test(key);
+}
+
 function onKey(e) {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
-  const t = e.target;
-  const typing = t && t.closest && t.closest('input, select, textarea');
-  if (typing && e.key !== 'Escape') return;
-  switch (e.key) {
-    case ' ': case 'k': case 'K':
-      e.preventDefault(); togglePlay(); break;
+  /* A composing IME owns the keyboard, space included: that space is how you
+     commit a candidate, not a play/pause. keyCode 229 is the same thing in the
+     legacy encoding, and some IMEs report only that. */
+  if (e.isComposing || e.keyCode === 229) return;
+  /* `code` is the physical key and does not go through the IME, so a space that
+     arrives as 'Process' (an IME enabled but not composing) is still a space. */
+  const key = e.key === 'Process' && e.code === 'Space' ? ' ' : e.key;
+  if (ownsKeyboard(e.target, key) && key !== 'Escape') return;
+  switch (key) {
+    case ' ': case 'Spacebar': case 'k': case 'K':
+      e.preventDefault();
+      if (e.repeat) break;               // holding it must not stutter the transport
+      togglePlay(); break;
     case 'ArrowLeft': e.preventDefault(); seekBy(-5); break;
     case 'ArrowRight': e.preventDefault(); seekBy(5); break;
     case 'ArrowUp':

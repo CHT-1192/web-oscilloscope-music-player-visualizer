@@ -28,7 +28,7 @@ E *= exp(-dt/τ)                      按真实经过的时间衰减
 
 *Oscillofun @22.5s，默认配方，光晕 55%，两边只有渲染器不同。左边那层包住图形的雾是 halation；右边笔画更硬，因为十级 alpha 阶梯到顶就没有余量了。*
 
-没有 WebGL2，或者拿不到浮点渲染目标时，退回 Canvas 2D（`?renderer=2d` 可以强制）。两条路径跑同一套 205 项检查：渲染组整体跑两遍，再加一次 `--disable-webgl` 的强制回退。回退路径做不到的事在上面写明了。
+没有 WebGL2，或者拿不到浮点渲染目标时，退回 Canvas 2D（`?renderer=2d` 可以强制）。两条路径跑同一套 217 项检查：渲染组整体跑两遍，再加一次 `--disable-webgl` 的强制回退。回退路径做不到的事在上面写明了。
 
 启动时先在临时画布上画一段再读回来，确认真的画出了东西，才把真画布交给 WebGL。画布一辈子只发一种上下文，选错没有退路；有驱动会宣称支持浮点渲染目标却丢掉每一次绘制。
 
@@ -48,7 +48,7 @@ E *= exp(-dt/τ)                      按真实经过的时间衰减
 ```bash
 node server.js --open      # http://127.0.0.1:10240
 node server.js -p 8080     # 换端口；被占用会自动 +1 重试，也可以用环境变量 PORT
-node test/verify.js        # 205 项端到端验证
+node test/verify.js        # 217 项端到端验证
 node test/bench.js         # 性能基准
 node build-standalone.js   # 改完 public/ 之后重新生成单文件版
 ```
@@ -153,7 +153,7 @@ node build-standalone.js   # 改完 public/ 之后重新生成单文件版
 
 URL 参数：`?renderer=2d` 强制 Canvas 回退，`?demo=1` 内置合成信号，`?track=N` 直接载入第 N 首，`?play=1` 载入后自动播放。测试的渲染阶段就是靠这几个跑起来的。
 
-键盘：空格播放暂停，方向键后退前进和音量，`,` `.` 换曲，`D` 演示信号，`F` 全屏，`S` 存图，`L` 播放列表，`M` 播放模式，`P` 设置面板，`⇧L` 帧日志，`B` 速度消隐，`T` 相位锁定，`G` 网格，`O` 性能模式，`R` 恢复默认，`Esc` 关面板。
+键盘：空格播放暂停（`K` 同义），方向键后退前进和音量，`,` `.` 换曲，`D` 演示信号，`F` 全屏，`S` 存图，`L` 播放列表，`M` 播放模式，`P` 设置面板，`⇧L` 帧日志，`B` 速度消隐，`T` 相位锁定，`G` 网格，`O` 性能模式，`R` 恢复默认，`Esc` 关面板。正在输入的输入框独占键盘（过滤框里敲空格就是空格）；滑块只保住自己的方向键，所以碰过音量或进度条之后空格照样能播——以前任何 `input` 有焦点都会吞掉全部快捷键。中文输入法在合成时（`isComposing`）空格归输入法，输入法只是开着的时候（事件报 `Process`）照样是空格。
 
 坐标约定是 X 接左声道、Y 接右声道、正方向朝上。曲子是按某个手性做的，参考机器也可能把 Y 反接，所以开关组里有 X 反向和 Y 反向，翻转时增益读数带负号。这两个开关跟着每首歌的参数一起记录。
 
@@ -180,7 +180,7 @@ public/js/main.js               接线与 init
 build-standalone.js             把同一批源码内联成单文件
 test/verify.js                  测试入口：分配端口、起服务器、按顺序跑各段
 test/harness.js                 断言与计数、HTTP 客户端、起服务器、找浏览器
-test/sections/*.js              205 项按失败方式分段：port、http、render-*、presets、playlist、resample、pcm、standalone
+test/sections/*.js              217 项按失败方式分段：port、http、render-*、presets、playlist、resample、pcm、standalone
 test/bench.js                   性能基准
 ```
 
