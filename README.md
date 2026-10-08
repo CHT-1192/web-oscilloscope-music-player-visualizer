@@ -28,7 +28,7 @@ E *= exp(-dt/τ)                      按真实经过的时间衰减
 
 *Oscillofun @22.5s，默认配方，光晕 55%，两边只有渲染器不同。左边那层包住图形的雾是 halation；右边笔画更硬，因为十级 alpha 阶梯到顶就没有余量了。*
 
-没有 WebGL2，或者拿不到浮点渲染目标时，退回 Canvas 2D（`?renderer=2d` 可以强制）。两条路径跑同一套 217 项检查：渲染组整体跑两遍，再加一次 `--disable-webgl` 的强制回退。回退路径做不到的事在上面写明了。
+没有 WebGL2，或者拿不到浮点渲染目标时，退回 Canvas 2D（`?renderer=2d` 可以强制）。两条路径跑同一套 225 项检查：渲染组整体跑两遍，再加一次 `--disable-webgl` 的强制回退。回退路径做不到的事在上面写明了。
 
 启动时先在临时画布上画一段再读回来，确认真的画出了东西，才把真画布交给 WebGL。画布一辈子只发一种上下文，选错没有退路；有驱动会宣称支持浮点渲染目标却丢掉每一次绘制。
 
@@ -48,7 +48,7 @@ E *= exp(-dt/τ)                      按真实经过的时间衰减
 ```bash
 node server.js --open      # http://127.0.0.1:10240
 node server.js -p 8080     # 换端口；被占用会自动 +1 重试，也可以用环境变量 PORT
-node test/verify.js        # 217 项端到端验证
+node test/verify.js        # 225 项端到端验证
 node test/bench.js         # 性能基准
 node build-standalone.js   # 改完 public/ 之后重新生成单文件版
 ```
@@ -153,7 +153,7 @@ node build-standalone.js   # 改完 public/ 之后重新生成单文件版
 
 URL 参数：`?renderer=2d` 强制 Canvas 回退，`?demo=1` 内置合成信号，`?track=N` 直接载入第 N 首，`?play=1` 载入后自动播放。测试的渲染阶段就是靠这几个跑起来的。
 
-键盘：空格播放暂停（`K` 同义），方向键后退前进和音量，`,` `.` 换曲，`D` 演示信号，`F` 全屏，`S` 存图，`L` 播放列表，`M` 播放模式，`P` 设置面板，`⇧L` 帧日志，`B` 速度消隐，`T` 相位锁定，`G` 网格，`O` 性能模式，`R` 恢复默认，`Esc` 关面板。正在输入的输入框独占键盘（过滤框里敲空格就是空格）；滑块只保住自己的方向键，所以碰过音量或进度条之后空格照样能播——以前任何 `input` 有焦点都会吞掉全部快捷键。中文输入法在合成时（`isComposing`）空格归输入法，输入法只是开着的时候（事件报 `Process`）照样是空格。
+键盘：空格播放暂停（`K` 同义），方向键后退前进和音量，`,` `.` 换曲，`D` 演示信号，`F` 全屏，`S` 存图，`L` 播放列表，`M` 播放模式，`P` 设置面板，`⇧L` 帧日志，`B` 速度消隐，`T` 相位锁定，`G` 网格，`O` 性能模式，`R` 恢复默认，`Esc` 关面板。正在输入的输入框独占键盘（过滤框里敲空格就是空格）；滑块只保住自己的方向键，所以碰过音量或进度条之后空格照样能播——以前任何 `input` 有焦点都会吞掉全部快捷键。中文输入法在合成时（`isComposing`）空格归输入法，输入法只是开着的时候（事件报 `Process`）照样是空格。键盘上的媒体键（Mac 的 F7 / F8 / F9）也接了：系统把它们当成普通 keydown 派发，而且 target 是当时有焦点的元素（输入框也算），所以处理放在所有归属判断之前。同一套还接了 Media Session —— 系统那个「正在播放」面板显示曲名与格式，封面是当前这幅图形（512×512，播放中每 20 秒重画一次），窗口不在前台时媒体键也归这里。
 
 坐标约定是 X 接左声道、Y 接右声道、正方向朝上。曲子是按某个手性做的，参考机器也可能把 Y 反接，所以开关组里有 X 反向和 Y 反向，翻转时增益读数带负号。这两个开关跟着每首歌的参数一起记录。
 
@@ -167,6 +167,7 @@ probe.js                        音频头解析：采样率、位深、声道、
 public/js/core.js               工具函数、设置对象、DOM 引用、toast
 public/js/audio.js              音频图、分析器、演示信号、采样率策略、分析源的选择
 public/js/pcm.js                文件自己那份样本：离线解码、内存上限、读取位置
+public/js/media.js              媒体键与系统「正在播放」面板：动作处理器、元数据、封面
 public/js/shaders.js            GLSL 源码
 public/js/gl.js                 能量渲染器：浮点累积、色调映射、halation
 public/js/perf.js               帧间隔环、工作耗时环、掉音看门狗
@@ -180,13 +181,13 @@ public/js/main.js               接线与 init
 build-standalone.js             把同一批源码内联成单文件
 test/verify.js                  测试入口：分配端口、起服务器、按顺序跑各段
 test/harness.js                 断言与计数、HTTP 客户端、起服务器、找浏览器
-test/sections/*.js              217 项按失败方式分段：port、http、render-*、presets、playlist、resample、pcm、standalone
+test/sections/*.js              225 项按失败方式分段：port、http、render-*、presets、playlist、resample、pcm、standalone
 test/bench.js                   性能基准
 ```
 
 服务器和测试也按失败方式拆：`server.js` 管路由、Range 和启动，音频头解析在 `probe.js`（写错是播放列表里的数字不对）；`verify.js` 只当入口，每一项检查在 `test/sections/` 里，渲染段是一个浏览器会话加一串场景（消隐、光晕、坐标、剖面、实时音频、累积层、主题），分析源单独一段（默认开、和 ffmpeg 逐点对、静音免疫、超上限回退、读取位置不跳）。
 
-模块是单向依赖的：`core → pcm / shaders`，`pcm → audio`，`shaders → gl`，然后 `{audio, gl, perf, trace} → render → apply → presets → playlist → ui → main`。拆分的依据是失败方式：GLSL 写错是驱动报编译错，perf 写错是日志里的数字不对，trace 写错是画面不对，三种查法混在一个文件里没法用。模块之间只通过命名空间调用或者顶部解构出来的别名引用，没有跨模块的裸变量。
+模块是单向依赖的：`core → pcm / shaders / media`，`pcm → audio`，`shaders → gl`，然后 `{audio, gl, perf, trace} → render → apply → presets → playlist → ui → main`（`playlist` 与 `ui` 另外用到 `media`，`media` 自己只依赖 `core`，不知道什么是播放列表）。拆分的依据是失败方式：GLSL 写错是驱动报编译错，perf 写错是日志里的数字不对，trace 写错是画面不对，三种查法混在一个文件里没法用。模块之间只通过命名空间调用或者顶部解构出来的别名引用，没有跨模块的裸变量。
 
 服务器版按原生 ES 模块加载，单文件版由 `build-standalone.js` 内联。内联器只认一种很小的方言（`import * as ns from './x.js'`，`export function/const/{...}`），其他写法都报错退出：`export default`、`export let`、具名 import、动态 `import()`、import 环、指向不存在导出的别名。`export let` 在真 ESM 里是活绑定，内联后会变成快照，与其编错不如编不过。
 

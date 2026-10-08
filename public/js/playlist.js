@@ -1,5 +1,6 @@
 import * as core from './core.js';
 import * as audio from './audio.js';
+import * as media from './media.js';
 import * as render from './render.js';
 import * as presets from './presets.js';
 
@@ -625,6 +626,8 @@ function loadTrack(i, autoplay) {
   dom.trackTitle.textContent = t.name;
   dom.trackSub.textContent = t.meta || '';
   document.title = `${t.name} · 示波器音乐播放器`;
+  /* What the operating system's now-playing panel shows. */
+  media.setTrack({ title: t.name, artist: t.meta || '' });
   setHint(false);
   renderPlaylist();
   // Re-selecting the same row must not undo tweaks the user has not saved yet.
@@ -676,6 +679,7 @@ function setDemo(on) {
     dom.trackTitle.textContent = '演示信号 · Demo';
     dom.trackSub.textContent = '内置合成器 · 3:2 利萨如曲线';
     document.title = '演示信号 · 示波器音乐播放器';
+    media.setTrack({ title: '演示信号 · Demo', artist: '内置合成器 · 3:2 利萨如曲线' });
     setHint(false);
     flags.redraw = true;
     render.resetRefSpeed();
@@ -695,6 +699,7 @@ function restoreTitle() {
     dom.trackTitle.textContent = '未加载音频';
     dom.trackSub.textContent = '拖入文件，或打开播放列表';
     document.title = '示波器音乐播放器 · Oscilloscope Music Player';
+    media.setTrack({ title: '未加载音频', artist: '拖入文件，或打开播放列表' });
   }
 }
 

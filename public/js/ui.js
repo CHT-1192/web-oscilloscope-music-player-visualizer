@@ -1,5 +1,6 @@
 import * as core from './core.js';
 import * as audio from './audio.js';
+import * as media from './media.js';
 import * as render from './render.js';
 import * as apply from './apply.js';
 import * as presets from './presets.js';
@@ -60,6 +61,7 @@ const {
 } = playlist;
 
 const uiCache = { cur: -1, dur: -1, seek: -1 };
+let posPushed = -1;
 /* The 原始样本 switch needs a second line, because on some files it is on and
    still not the source in use — the picture would then be coming from the
    element tap while the switch says otherwise. Name the one that is running.
@@ -80,6 +82,7 @@ function updatePcmNote() {
 function updateTransportUI() {
   updatePcmNote();
   const a = dom.audio;
+  media.setPlaying(!a.paused);
   const cur = Number.isFinite(a.currentTime) ? a.currentTime : 0;
   const dur = Number.isFinite(a.duration) ? a.duration : 0;
   if (Math.abs(cur - uiCache.cur) >= 0.06 || Math.abs(dur - uiCache.dur) > 0.2) {
@@ -87,6 +90,10 @@ function updateTransportUI() {
     uiCache.dur = dur;
     dom.tCur.textContent = fmtTime(cur);
     dom.tDur.textContent = Number.isFinite(a.duration) ? fmtTime(dur) : '--:--';
+    /* The OS progress bar. Once a second is plenty for a scrubber and each call
+       is IPC, so it rides the same throttle as the readout above. */
+    const sec = Math.floor(cur);
+    if (dur > 0 && sec !== posPushed) { posPushed = sec; media.setPosition(dur, cur, a.playbackRate); }
     const pct = dur > 0 ? clamp((cur / dur) * 100, 0, 100) : 0;
     if (!seekHeld) {
       dom.seek.value = String(Math.round(pct * 10));
@@ -101,6 +108,19 @@ function bindControls() {
      but nothing ever bound it, so space / arrows / , / . / D / S / F / O were all
      dead. Bind it here, where every other control gets wired. */
   document.addEventListener('keydown', onKey);
+  /* The operating system's side of the transport: the media keys when the window
+     is not focused, the Control Center buttons, and the Now Playing tile — whose
+     artwork is the live figure. ui.js owns the transport, so it hands the hooks
+     over; media.js knows nothing about playlists or pixels. */
+  media.install({
+    play: () => play(),
+    pause: () => dom.audio.pause(),
+    next: () => nextTrack(1),
+    prev: () => nextTrack(-1),
+    seekBy: (d) => seekBy(d),
+    seekTo: (t) => { try { dom.audio.currentTime = t; } catch (err) { /* ignore */ } },
+    frame: () => render.composite(),
+  });
   for (const el of document.querySelectorAll('[data-set]')) {
     const key = el.dataset.set;
     const out = document.querySelector(`[data-out="${key}"]`);
@@ -273,13 +293,25 @@ function bindControls() {
 function bindAudioEvents(el) {
   el.addEventListener('play', () => {
     dom.btnPlay.classList.add('playing');
+    /* Always the CURRENT element (dom.audio), never the one this listener was
+       bound to: changing the engine rate replaces the <audio>, and a `pause`
+       from the element that was just replaced can be delivered after the new one
+       has started — which left the panel saying "paused" while it was playing.
+       updateTransportUI asks again ten times a second, so this is also
+       self-correcting rather than a state that can drift. */
+    media.setPlaying(!dom.audio.paused);
     flags.redraw = true;
   });
-  el.addEventListener('pause', () => { dom.btnPlay.classList.remove('playing'); playlist.flushPlayhead(); });
+  el.addEventListener('pause', () => {
+    dom.btnPlay.classList.remove('playing');
+    media.setPlaying(!dom.audio.paused);
+    playlist.flushPlayhead();
+  });
   el.addEventListener('timeupdate', () => playlist.notePlayhead());
   el.addEventListener('loadedmetadata', () => playlist.noteDuration());
   el.addEventListener('ended', () => {
     dom.btnPlay.classList.remove('playing');
+    media.setPlaying(!dom.audio.paused);
     /* What "ended" means is a playlist decision (顺序 / 单曲 / 随机), not a UI one. */
     playlist.advance();
   });
@@ -414,6 +446,19 @@ function ownsKeyboard(el, key) {
 
 function onKey(e) {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
+  /* The keyboard's media keys (F7 / F8 / F9 on a Mac) are the system's transport
+     controls, so they are handled before anything else can claim the keyboard.
+     Measured: the event arrives as an ordinary keydown whose target is whatever
+     has FOCUS — a text field or a slider included — with key 'MediaPlayPause',
+     so the ownership test below would otherwise swallow it. Holding one of them
+     repeats, hence the guard. */
+  switch (e.key) {
+    case 'MediaPlayPause': e.preventDefault(); if (!e.repeat) togglePlay(); return;
+    case 'MediaTrackNext': e.preventDefault(); if (!e.repeat) nextTrack(1); return;
+    case 'MediaTrackPrevious': e.preventDefault(); if (!e.repeat) nextTrack(-1); return;
+    case 'MediaStop': e.preventDefault(); dom.audio.pause(); return;
+    default: break;
+  }
   /* A composing IME owns the keyboard, space included: that space is how you
      commit a candidate, not a play/pause. keyCode 229 is the same thing in the
      legacy encoding, and some IMEs report only that. */

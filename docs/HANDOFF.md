@@ -1,12 +1,12 @@
 # 交接文档 / 上下文压缩
 
-截至「原始样本」那一版（`pcm.js` 加入，全套 217 项）。这份文档的作用是替代之前几轮对话：里面是结论、常量和没做完的事，不是过程。
+截至「原始样本」那一版（`pcm.js` 加入，全套 225 项）。这份文档的作用是替代之前几轮对话：里面是结论、常量和没做完的事，不是过程。
 
 ## 运行与检查
 
 ```bash
 node server.js --open      # http://127.0.0.1:10240（默认端口，-p 改，PORT 环境变量也行）
-node test/verify.js        # 217 项端到端验证；--only=port|http|render|presets|playlist|resample|pcm|standalone 可只跑一段
+node test/verify.js        # 225 项端到端验证；--only=port|http|render|presets|playlist|resample|pcm|standalone 可只跑一段
 node build-standalone.js   # 改完 public/ 后重新生成单文件版
 node test/bench.js         # 性能基准
 ```
@@ -27,6 +27,7 @@ node test/bench.js         # 性能基准
 public/js/core.js      工具、设置对象 S、DOM 引用、toast、共享 flags（叶子）
 public/js/audio.js     音频图、分析器、演示信号、采样率策略、分析源的选择
 public/js/pcm.js       文件自己那份样本：OfflineAudioContext 解码、内存上限、读取位置
+public/js/media.js     媒体键与系统「正在播放」面板：动作处理器、元数据、封面（叶子，只依赖 core）
 public/js/shaders.js   GLSL 源码
 public/js/gl.js        能量渲染器：浮点累积、色调映射、halation pass
 public/js/perf.js      帧间隔环、工作耗时环、掉音看门狗、长任务/生命周期
@@ -42,13 +43,13 @@ probe.js               音频头解析（WAV/FLAC/AIFF/CAF/MP4/Ogg/MP3），只�
 build-standalone.js    把同一批模块内联成单文件
 test/verify.js         测试入口：分配端口、起服务器、按 key 顺序跑各段
 test/harness.js        断言与计数、HTTP 客户端、起服务器、找 Playwright/Chromium
-test/sections/*.js     217 项按失败方式分段：port、http、render-synth、render（会话驱动）、
+test/sections/*.js     225 项按失败方式分段：port、http、render-synth、render（会话驱动）、
                        render-blanking/halo/model/axes/profile/audio/surface/theme/webgl-absent、
                        render-stroke（笔画只沉积一次 / 停住的束流是点）、presets、playlist、
                        resample、pcm、standalone；test/bench.js 性能基准
 ```
 
-依赖单向无环：`core → pcm / shaders`，`pcm → audio`，`shaders → gl`，然后 `{audio, gl, perf, trace} → render → apply → presets → playlist → ui → main`。模块之间只用命名空间调用（`audio.isLive()`）或顶部解构出的别名，禁止跨模块裸变量。拆分的依据是失败方式：GLSL 写错是驱动编译错，perf 写错是日志数字不对，trace 写错是画面不对。
+依赖单向无环：`core → pcm / shaders / media`，`pcm → audio`，`shaders → gl`，然后 `{audio, gl, perf, trace} → render → apply → presets → playlist → ui → main`；`playlist`/`ui` 用到 `media`。模块之间只用命名空间调用（`audio.isLive()`）或顶部解构出的别名，禁止跨模块裸变量。拆分的依据是失败方式：GLSL 写错是驱动编译错，perf 写错是日志数字不对，trace 写错是画面不对。
 
 内联器（`build-standalone.js`）只认一种方言：`import * as ns from './x.js'` + `export function/const/{...}`。其他写法一律报错退出：`export default`、`export let`、具名 import、动态 `import()`、import 环、指向不存在导出的别名。它还会 `new Function` 自检产物能不能解析。改模块结构后先跑它，静态错误一秒就报。
 
@@ -94,6 +95,14 @@ E *= exp(-dt/τ)                     dt 取 performance.now() 真实差值，上
 - 上限：文件 128 MB、解码后预估 256 MB（时长未知时按 128 kbps 估，宁大不小）。超过就退回元素采样，状态行写原因。
 - 解码器如果返回了别的采样率（说明它偷偷重采样了），这条路径直接判不可用，而不是把重采样过的样本当原始样本用。
 
+## 媒体键与系统面板
+
+系统把 F7/F8/F9 当成普通 keydown 派发（实测：`key`/`code` 都是 `MediaPlayPause`，**target 是当时有焦点的元素**，聚焦在音量滑块或过滤框上也是），所以 `ui.js onKey` 把四个媒体键放在最前面处理，任何归属判断之前；按住会 repeat，所以忽略重复。
+
+窗口不在前台时按键归系统，那条路要靠 `media.js`：`navigator.mediaSession.setActionHandler` 接管 play / pause / stop / 上一首 / 下一首 / 前后跳 ±5 s / 定位，`metadata` 给系统面板（曲名 + 格式行），`setPositionState` 给进度条（跟着传输出口，1 秒一次）。封面是**当前这幅图形**：把 `render.composite()` 的结果缩到 512×512、播放中每 20 秒及每次开始播放重画一次，旧的 blob URL 晚 1 秒撤销。
+
+状态是**推导**出来的，不是从事件里攒的：`updateTransportUI` 每秒十次把 `!dom.audio.paused` 交给 `media.setPlaying`，因为换采样率会换掉 `<audio>` 元素，被换掉那个元素迟到的 `pause` 曾让面板在真的播放时显示「已暂停」。事件里也读 `dom.audio`（当前元素），不读绑定时的那个。
+
 ## 测量出来的工作点
 
 | | 采样窗口 | 余辉 | 线宽 | 亮度 | 备注 |
@@ -130,6 +139,7 @@ E *= exp(-dt/τ)                     dt 取 performance.now() 真实差值，上
 - **掉音看门狗**：跑在独立的 250 ms 定时器上（不能挂在 rAF 上，隐藏标签页会把 rAF 节流到 1 Hz，那正好是掉音会藏起来的状态）。它记 `音频时钟落后 X ms`（墙上时间减去 `AudioContext.currentTime`，只在整个音频图真的在渲染时前进，所以掉音不触发任何 DOM 事件也能被抓到）、`信号静默`（在播放但画出来的峰值全是 0；读的是 `trace.peaks()`，也就是这一帧真正画的东西，所以分析源换了以后它跟着换，不会因为元素被静音就误报）、`音频上下文` 状态变化、`长任务`（Firefox 的 longtask 条目）、`页面 freeze` / `可见性`。时钟归零会单独报成"音频上下文重建（换采样率）"，不是掉音。
 - **`window.__scope`**：`state`、`perf(n)`、`readTrace(x,y,w,h)`、`readAnalyser()`、`readSignal()`（这一帧真正交给渲染器的那份样本）、`pcmSlice(start,n)`（解码缓冲里任意位置的原始帧）、`setRateMode()`。
 - **URL**：`?renderer=2d`、`?demo=1`、`?track=N`、`?play=1`。
+- 媒体键（Mac 的 F7/F8/F9）与系统「正在播放」面板见下一节。
 - 键盘：空格（`K` 同义）、方向键、`,` `.`、`D`、`F`、`S`、`L`、`M`、`P`、`⇧L`、`B`、`T`、`G`、`O`、`R`、`Esc`。这些曾经全是死的（`onKey` 拆模块时没被绑定），现在有测试盯着，包括有焦点时的归属（见下一条）。
 
 ## 这轮修掉的 bug（症状 → 原因 → 处理）
@@ -151,6 +161,8 @@ E *= exp(-dt/τ)                     dt 取 performance.now() 真实差值，上
 | 播放位置记不住（刷新后回到 0） | 节流的哨兵值写成 0："距上次写入" 在页面打开不足 5 秒时永远小于阈值，连 pause 的强制写入都被吞掉 | 哨兵改成 `-Infinity`，`flushPlayhead()` 才真的绕过节流；测试里就是刷新后立即暂停这个场景抓到它的 |
 | 笔画是一串珠子，每个采样接缝上鼓一个点 | 每段的沉积是「线段最近点的 3σ 圆盘」，而每段的四边形都越过自己的两端，于是相邻两段在接缝上各叠一份：接缝处是局部速率的两倍，周期正好一个采样 | 比光斑长的段不再外扩，首尾相接（`shaders.js VERT_BEAM` 里 `len < 2σ ? 3σ : 0`，是沉积自己的性质，所以规则放在着色器里，不占实例数据）；比光斑短的段保留圆帽，那是束流停留时该有的亮点。梳状从 5.45/255 降到 0.01，回归检查在 `render-stroke.js` |
 | 数字静音整屏是空的（两条路径） | 窗口里所有采样都落在同一点，段长为零；能量路径取方向时 `seg/len` 得到 (0,0)、四边形退化成一点，8 位路径画的是零长度子路径，浏览器不画 | 能量路径给退化段一个轴向，8 位路径显式填一个圆点（`paintInto`，含 blanking 关闭时的单折线分支） |
+| 键盘的媒体键按了没反应（F8 播放/暂停、F7/F9 切曲） | 系统把它当普通 keydown 派发，`key` 是 `MediaPlayPause`，而 **target 是当时有焦点的元素**（实测聚焦过滤框时 target 就是那个 input），于是被「谁独占键盘」的判断吞掉；窗口不在前台时系统更不会派发给页面 | `onKey` 最前面接四个媒体键（先于归属判断，忽略 repeat）；`media.js` 用 Media Session 接管 play / pause / stop / 切曲 / ±5 s / 定位，曲名与格式行写进系统面板，封面是当前图形（512×512，播放中每 20 秒重画一次）|
+| 系统「正在播放」面板显示已暂停，而其实在播 | 换采样率会换掉 `<audio>` 元素，被换掉那个元素迟到的 `pause` 在处理器里读到的是旧元素的 `paused` | 状态改为推导：`updateTransportUI` 每秒十次把当前元素的 `!paused` 交给 `media.setPlaying`；事件处理器也读 `dom.audio` 而不是绑定时的那个元素 |
 | 空格没反应，尤其是碰过音量或进度滑块之后 | `onKey` 把任何 `input` 都当成「在打字」而直接 return，滑块偏偏拖完还留着焦点，于是全部快捷键被吞（实测：`#volume` / `#seek` 有焦点时空格完全无反应）。另外 IME 合成中的空格被当成播放/暂停（切候选词会误触），长按空格会来回抖动 | 只有真正的文本控件（`textarea`、`select`、非 `range` 的 `input`、contenteditable）独占键盘；滑块只保住自己的方向键与 Home/End/Page，而 音量 / 进度条 属传输控件，方向键仍是文档里的 ±0.05、±5 s；`isComposing` 或 `keyCode 229` 直接不管；空格与 `K` 忽略 `repeat`；`key === 'Process'` 且 `code === 'Space'` 仍按空格处理。`render-model.js` 里 6 项检查盯着（有焦点的滑块、传输滑块上空格、过滤框里打字、输入法三种） |
 | `node test/bench.js` 一跑就崩：`workAvg is not defined` | `perf.js` 的 `resetWorkStats` 顺手把 `workAvg`/`workP50` 清零，可这两个值住在 `render.js`；模块里给未声明的名字赋值就是 ReferenceError（严格模式），所以 `__scope.resetWorkStats` 抛异常，而 bench 每个样本前都会调它 | `perf.js` 只清自己的环，`render.js` 有同名函数清自己的平滑值并叫 perf 清环；bench 现在能跑完（默认窗口下工作耗时低于 Chrome 100 µs 的时钟量化，所以 trim25 常是 0，那是这个基准本身的局限） |
 | 音量拖到 0 画面全黑，标签页静音也全黑而播放条说在播 | `HTMLMediaElement.volume` / `.muted` 作用在 `MediaElementAudioSourceNode` **之前**：Gecko 把元素的有效音量做在节点自己的输入轨上，Web Audio 1.22 也要求 volume 建节点后照常生效，节点内部没有乘之前的抽头 | 第一步：可听路径改走接在分析器之后的 `volGain`，元素永远音量 1、不静音。第二步（默认开）：分析改读文件自己的样本（`pcm.js`），元素被静音时画面照画；关掉开关后同一个静音立刻清空画面，两边都有测试 |
@@ -181,7 +193,7 @@ E *= exp(-dt/τ)                     dt 取 performance.now() 真实差值，上
 - 界面文案简短；文档不要"AI 味"：不加粗强调、不用引用块、不拿破折号当标点、不写"不是 X 而是 Y"。
 - 控件不许撒谎：拖得动就必须有用；只在一条路径上有效的会置灰并写明原因；读数要显示真正在用的值。
 - 长命令放后台跑（前台超时被 SIGTERM 会连带把同一会话里的进程一起带走，曾经把用户正在跑的服务器杀过）。不要 `pkill -f "node server.js"`，测试自己抢空闲端口。
-- 别留半成品；改完随手跑对应测试段，提交前跑全量（217 项）。
+- 别留半成品；改完随手跑对应测试段，提交前跑全量（225 项）。
 - 大于 300 行的文件考虑拆，拆分依据是失败方式而不是行数。
 
 ## 环境

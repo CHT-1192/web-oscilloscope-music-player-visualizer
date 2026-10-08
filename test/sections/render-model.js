@@ -152,6 +152,89 @@ async function model(ctx) {
   await strike('space with an enabled IME still plays', { key: 'Process', code: 'Space' }, true);
   await strike('a composing space is left to the IME', { key: ' ', code: 'Space', isComposing: true }, false);
   await strike('keyCode 229 is left to the IME', { key: ' ', code: 'Space', keyCode: 229 }, false);
+
+  /* The keyboard's media keys (F7 / F8 / F9 on a Mac). Measured on a real F8:
+     the system sends an ordinary keydown whose key is 'MediaPlayPause' and whose
+     TARGET is whatever has focus — a text field or a slider — so a handler that
+     respects focus loses them. And what the OS shows in its now-playing panel
+     comes from navigator.mediaSession, metadata included. */
+  const metaOf = () => page.evaluate(() => {
+    const s = navigator.mediaSession;
+    const m = s && s.metadata;
+    const art = m && m.artwork && m.artwork.length ? m.artwork[0] : null;
+    return {
+      state: s ? s.playbackState : 'none',
+      title: m ? m.title : '',
+      artist: m ? m.artist : '',
+      sizes: art ? art.sizes : '',
+      src: art ? String(art.src).slice(0, 5) : '',
+    };
+  });
+
+  await leaveDemo();
+  await page.evaluate(() => {
+    if (!document.getElementById('panelList').classList.contains('open')) document.getElementById('btnList').click();
+    const el = document.getElementById('trackFilter');
+    el.value = '';
+    el.focus();
+  });
+  await page.waitForTimeout(400);
+  const f8a = await paused();
+  await page.keyboard.press('MediaPlayPause');
+  await page.waitForTimeout(700);
+  const f8b = await paused();
+  const held = await page.evaluate(() => document.getElementById('trackFilter').value);
+  if (f8a === true && f8b === false && held === '') {
+    ok('F8 reaches the transport even from a text field', 'filter focused, transport playing');
+  } else {
+    bad('F8 reaches the transport even from a text field', `paused ${f8a} → ${f8b}, filter "${held}"`);
+  }
+
+  const title0 = await page.evaluate(() => document.getElementById('trackTitle').textContent);
+  await page.keyboard.press('MediaTrackNext');
+  await page.waitForTimeout(1200);
+  const title1 = await page.evaluate(() => document.getElementById('trackTitle').textContent);
+  const meta1 = await metaOf();
+  if (title1 && title1 !== title0 && meta1.title === title1 && meta1.artist) {
+    ok('F9 moves the track and the system panel follows', `${title0} → ${title1}, panel "${meta1.artist.slice(0, 28)}"`);
+  } else {
+    bad('F9 moves the track and the system panel follows', JSON.stringify({ title0, title1, meta1 }));
+  }
+  await page.keyboard.press('MediaTrackPrevious');
+  await page.waitForTimeout(1400);
+
+  const art = await page.evaluate(() => new Promise((res) => {
+    const s = navigator.mediaSession;
+    const a = s && s.metadata && s.metadata.artwork;
+    if (!a || !a.length) return res(null);
+    const img = new Image();
+    img.onload = () => res([img.naturalWidth, img.naturalHeight, a[0].sizes]);
+    img.onerror = () => res('load failed');
+    img.src = a[0].src;
+    setTimeout(() => res('timeout'), 4000);
+  }));
+  if (Array.isArray(art) && art[0] === 512 && art[1] === 512 && art[2] === '512x512') {
+    ok('the now-playing tile is the live figure', `artwork ${art[0]}×${art[1]}, ${art[2]}`);
+  } else {
+    bad('the now-playing tile is the live figure', JSON.stringify(art));
+  }
+
+  const meta2 = await metaOf();
+  if (meta2.state === 'playing' && /^blob:/.test(meta2.src)) {
+    ok('the now-playing state matches the transport', `${meta2.state}, artwork ${meta2.src}…`);
+  } else {
+    bad('the now-playing state matches the transport', JSON.stringify(meta2));
+  }
+
+  await page.evaluate(() => {
+    const el = document.getElementById('trackFilter');
+    el.value = '';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.blur();
+    if (document.getElementById('panelList').classList.contains('open')) document.getElementById('btnList').click();
+  });
+  await backToDemo();
+  await page.waitForTimeout(300);
 }
 
 module.exports = model;
