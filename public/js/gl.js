@@ -438,10 +438,24 @@ export function createGL(canvas) {
 
   /** The frame as RGBA bytes — the same shape a 2D canvas would give, so the
    *  caller does not have to care which renderer is running. */
+  /* The debug seam, in the app's top-down coordinates. GL counts rows from the
+     BOTTOM and returns them in that order, so the origin has to be moved (done
+     here) AND the rows have to be flipped back — which they were not, so every
+     row-indexed reading of the energy path came back upside down while the 8-bit
+     path (getImageData, top-down) did not. Anything that measured "above" or
+     "below" was reading the opposite on one of the two renderers. */
+  let readScratch = new Uint8Array(0);
   function readPixels(x, y, w, h, out) {
-    const buf = out || new Uint8Array(w * h * 4);
+    const bytes = w * h * 4;
+    if (readScratch.length < bytes) readScratch = new Uint8Array(bytes);
+    const tmp = readScratch.subarray(0, bytes);
     gl.bindFramebuffer(gl.FRAMEBUFFER, display.fbo);
-    gl.readPixels(x, display.h - y - h, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    gl.readPixels(x, display.h - y - h, w, h, gl.RGBA, gl.UNSIGNED_BYTE, tmp);
+    const buf = out || new Uint8Array(bytes);
+    const stride = w * 4;
+    for (let row = 0; row < h; row++) {
+      buf.set(tmp.subarray((h - 1 - row) * stride, (h - row) * stride), row * stride);
+    }
     return buf;
   }
 

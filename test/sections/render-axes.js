@@ -35,6 +35,33 @@ async function axes(ctx) {
   await page.waitForTimeout(1600);
   const downBefore = await inkAt(QUARTER);
   const upBefore = await inkAt(-QUARTER);
+
+  /* Where the seam's rows run. Every "above" and "below" reading in this suite
+     goes through `readTrace`, and GL's readPixels counts rows from the BOTTOM:
+     the energy path handed back an upside-down image while the 8-bit path
+     (getImageData, top-down) did not. Small boxes cannot see it — the ink is
+     inside the box either way — so this measures the centroid of a whole-canvas
+     scan instead, against the plot centre, on a pattern that sits below it. */
+  const seam = await page.evaluate(() => {
+    const st = window.__scope.state;
+    const c = st.canvas;
+    const d = window.__scope.readTrace(0, 0, c.w, c.h);
+    let sum = 0, n = 0;
+    for (let y = 0; y < c.h; y++) {
+      let row = 0;
+      for (let x = 0; x < c.w; x++) row += d[(y * c.w + x) * 4 + 3];
+      if (row) { sum += y * row; n += row; }
+    }
+    return { centroid: n ? +(sum / n).toFixed(1) : -1, centre: +(c.h / 2).toFixed(1), h: c.h };
+  });
+  if (seam.centroid > seam.centre + 10) {
+    ok('the debug seam reads the same way up on both renderers',
+      `ink centroid row ${seam.centroid} vs plot centre ${seam.centre} (the line sits below it)`);
+  } else {
+    bad('the debug seam reads the same way up on both renderers',
+      `centroid ${seam.centroid} vs centre ${seam.centre} — the readback is upside down`);
+  }
+
   const outBefore = await page.evaluate(() =>
     document.querySelector('[data-out="gainY"]').textContent);
   await page.evaluate(() => document.querySelector('[data-toggle="invertY"]').click());

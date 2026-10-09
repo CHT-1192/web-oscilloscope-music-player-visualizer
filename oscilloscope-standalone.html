@@ -2631,10 +2631,24 @@ function createGL(canvas) {
 
   /** The frame as RGBA bytes — the same shape a 2D canvas would give, so the
    *  caller does not have to care which renderer is running. */
+  /* The debug seam, in the app's top-down coordinates. GL counts rows from the
+     BOTTOM and returns them in that order, so the origin has to be moved (done
+     here) AND the rows have to be flipped back — which they were not, so every
+     row-indexed reading of the energy path came back upside down while the 8-bit
+     path (getImageData, top-down) did not. Anything that measured "above" or
+     "below" was reading the opposite on one of the two renderers. */
+  let readScratch = new Uint8Array(0);
   function readPixels(x, y, w, h, out) {
-    const buf = out || new Uint8Array(w * h * 4);
+    const bytes = w * h * 4;
+    if (readScratch.length < bytes) readScratch = new Uint8Array(bytes);
+    const tmp = readScratch.subarray(0, bytes);
     gl.bindFramebuffer(gl.FRAMEBUFFER, display.fbo);
-    gl.readPixels(x, display.h - y - h, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    gl.readPixels(x, display.h - y - h, w, h, gl.RGBA, gl.UNSIGNED_BYTE, tmp);
+    const buf = out || new Uint8Array(bytes);
+    const stride = w * 4;
+    for (let row = 0; row < h; row++) {
+      buf.set(tmp.subarray((h - 1 - row) * stride, (h - row) * stride), row * stride);
+    }
     return buf;
   }
 
@@ -2965,6 +2979,7 @@ function setTarget(t) {
 const PX = new Float32Array(MAXN);
 const PY = new Float32Array(MAXN);
 const SEGR = new Float32Array(MAXN);   // raw per-sample step, in pixels
+const DOSE = new Float32Array(MAXN);   // this frame's dwell rate per sample, 1/v
 /* Segment indices grouped by brightness bucket. Building these in the same
    pass that maps samples to pixels means the whole trace is produced with
    ONE pass over the samples plus one canvas op per drawn segment, instead of
@@ -3166,29 +3181,53 @@ function drawTrace(L, R, capacity, n, live) {
       const dx = x - prevX, dy = y - prevY;
       const s = Math.sqrt(dx * dx + dy * dy);
       SEGR[i] = s;
+      DOSE[i] = ref / (s + eps);      // the dwell rate this sample owns
       total += s;
     }
     prevX = x;
     prevY = y;
   }
 
-  /* ---- pass 2: deposit, with the dose smoothed along the path ---------
+  /* ---- pass 2: deposit, with the dose integrated over the spot ---------
      Brightness is 1/speed, and on a REAL tube that is a property of a stroke:
      the beam lingers along a slow one and races through a fast one. Sample by
      sample, though, the step jitters (the trace of an audio signal is not a
      smooth curve at 44 kHz), so a raw 1/step flickers at the sample pitch and
      the trace comes out BEADED — a string of little dots, which is exactly what
-     it looked like. A phosphor does not see individual samples either: the spot
-     is a few pixels wide, so what it integrates is the average speed over its
-     own width. That is the ±3 sample box below, and it is why the dashes are
-     stroke-length rather than dot-length. */
+     it looked like.
+
+     What the phosphor does is integrate the DWELL RATE over its own footprint: a
+     few pixels of path, not a fixed number of samples. So the average below runs
+     over the samples within ~2σ of PATH (measured with the steps themselves), and
+     it averages the dose rather than the speed. Those are not the same thing:
+     averaging the speed and inverting is a HARMONIC mean of the dwell, which
+     weights a dash boundary toward the fast side and washes the dashes out, while
+     the integral is dominated by the side the beam lingered on. Measured on a
+     synthetic collinear speed change (11.6 px per sample, then 0.12): the old
+     ±3-sample box ramped over three samples = 35 px of path where the spot is
+     3-5 px. The ±3 cap stays as a bound for very slow beams, where the window
+     would otherwise walk tens of samples — the dose there is saturated, so it
+     cannot show — and it keeps this loop at a fixed small cost. */
+  const span = sigmaFor(S.lineWidth) * 2;
   for (let i = 1; i < n; i++) {
     const s = SEGR[i];
     {
-      const j0 = i > 3 ? i - 3 : 1, j1 = i + 3 < n ? i + 3 : n - 1;
-      let sum = 0;
-      for (let j = j0; j <= j1; j++) sum += SEGR[j];
-      const sSmooth = sum / (j1 - j0 + 1);
+      let wsum = 0, dsum = 0, dist = 0;
+      for (let j = i; j >= 1 && i - j <= 3; j--) {
+        if (j < i) { dist += SEGR[j + 1]; if (dist > span) break; }
+        const wgt = SEGR[j];
+        wsum += wgt;
+        dsum += wgt * DOSE[j];
+      }
+      dist = 0;
+      for (let j = i + 1; j < n && j - i <= 3; j++) {
+        dist += SEGR[j];
+        if (dist > span) break;
+        const wgt = SEGR[j];
+        wsum += wgt;
+        dsum += wgt * DOSE[j];
+      }
+      const doseHere = wsum > 0 ? dsum / wsum : DOSE[i];
       const x = PX[i];
       const y = PY[i];
       const prevX = PX[i - 1];
@@ -3207,7 +3246,7 @@ function drawTrace(L, R, capacity, n, live) {
            ≈ 0.01 px), not a display floor — a floor near the mean step would
            flatten the whole law into a 2x range and the picture would read as a
            uniformly bright web whose contrast comes from self-overlap instead. */
-        const dose = ref / (sSmooth + eps);     // 1/v, in units of the mean step
+        const dose = doseHere;                  // dwell integrated over the spot
         if (dose > doseMax) doseMax = dose;
         if (T.gl) {
           /* Energy model: the same 1/v law, but it ADDS — no ladder to quantise

@@ -132,6 +132,80 @@ async function stroke(ctx) {
     const b = document.querySelector('[data-toggle="blanking"]');
     if (b.getAttribute('aria-pressed') === 'false') b.click();
   });
+
+  /* ---- a dash boundary is one sample wide, not three -------------------- */
+  /* What the phosphor integrates is the DWELL RATE over its own footprint, so a
+     fast stroke stays flat right up to where the beam slows down. This pattern
+     keeps both halves on ONE line — a corner would put its own blob at the
+     boundary and hide the effect: the fast half steps ~12 px per sample and the
+     slow half ~0.12, so the dwell rate steps by ~100x with no kink in the path.
+     Blanking has to be off for it, because the fast half is 20x the mean speed
+     and the blanking threshold would simply drop it, and the phase trigger has to
+     be off because it re-slices the window to a rising zero crossing, which would
+     move both halves somewhere other than where this looks for them. */
+  setSynth('speed');
+  await setCtl('windowIdx', 2);            // 2048
+  await setCtl('persistence', 0);          // one frame's deposit, no afterglow
+  await setCtl('intensity', 1.2);          // the fast half lands mid-grey
+  await setCtl('halo', 0);
+  await page.evaluate(() => {
+    for (const t of ['blanking', 'trigger']) {
+      const b = document.querySelector(`[data-toggle="${t}"]`);
+      if (b.getAttribute('aria-pressed') === 'true') b.click();
+    }
+  });
+  await page.waitForTimeout(1800);
+  const ramp = await page.evaluate(() => {
+    const st = window.__scope.state;
+    const c = st.canvas;
+    const pc = window.__plotCenter();
+    const d = window.__scope.readTrace(0, 0, c.w, c.h);
+    const al = (x, y) => (x < 0 || y < 0 || x >= c.w || y >= c.h) ? 0 : d[((y | 0) * c.w + (x | 0)) * 4 + 3];
+    const yc = Math.round(pc.cy - 0.2 * pc.PLOT / 2);
+    const x0 = Math.round(pc.cx - 0.8 * pc.PLOT / 2);
+    const xm = Math.round(pc.cx);                      // the speed change is at x = 0
+    const prof = [];
+    for (let x = x0; x <= Math.round(pc.cx + 0.8 * pc.PLOT / 2); x++) {
+      let m = 0;
+      for (let dy = -3; dy <= 3; dy++) m = Math.max(m, al(x, yc + dy));
+      prof.push(m);
+    }
+    const at = (x) => prof[x - x0];
+    const fast = at(x0 + 20);
+    const slow = Math.max(...prof.slice(xm - x0, xm - x0 + 6));
+    const lvl = (p) => fast + (slow - fast) * p;
+    let hi = xm, lo = xm;
+    for (let x = xm; x >= x0; x--) if (at(x) <= lvl(0.9)) { hi = x; break; }
+    for (let x = xm; x >= x0; x--) if (at(x) <= lvl(0.1)) { lo = x; break; }
+    const step = 0.8 * pc.PLOT / 2 / (0.01 * st.windowSize);
+    /* The fast half's own level well away from the boundary, and how far the ramp
+       reaches back into it: 35 px of smear is what the old ±3 SAMPLE box did. */
+    return { step: +step.toFixed(2), fast, slow, rampPx: hi - lo, backPx: xm - lo, near: at(xm - 20) };
+  });
+  /* A scene that cannot show the ramp must fail loudly, not pass at zero. */
+  const rampSeen = ramp.fast > 0 && ramp.slow > ramp.fast * 1.5;
+  if (isGL) {
+    if (rampSeen && ramp.rampPx <= ramp.step * 1.6 && ramp.near <= ramp.fast * 1.15) {
+      ok('a dash boundary is one sample wide, not three',
+        `ramp ${ramp.rampPx} px against a ${ramp.step} px sample; ${ramp.backPx} px back it is ${ramp.near} vs ${ramp.fast}`);
+    } else {
+      bad('a dash boundary is one sample wide, not three',
+        JSON.stringify(ramp) + (rampSeen ? '' : ' — the scene shows no ramp at all'));
+    }
+  } else if (ramp.fast > 0 && ramp.fast === ramp.slow) {
+    /* The 8-bit path has no 1/v law with blanking off at all — it strokes the
+       whole path as ONE polyline at one alpha — so there is no ramp here for it
+       to smear. Asserting exactly that is the honest check for this renderer. */
+    ok('8-bit path: blanking off is one alpha, so nothing to smear', `flat at ${ramp.fast}`);
+  } else {
+    bad('8-bit path: blanking off is one alpha, so nothing to smear', JSON.stringify(ramp));
+  }
+  await page.evaluate(() => {
+    for (const t of ['blanking', 'trigger']) {
+      const b = document.querySelector(`[data-toggle="${t}"]`);
+      if (b.getAttribute('aria-pressed') === 'false') b.click();
+    }
+  });
 }
 
 module.exports = { stroke };

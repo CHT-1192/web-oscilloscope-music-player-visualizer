@@ -85,6 +85,12 @@ async function renderTests(pw, rq = '') {
         return [0.62 * Math.sin(t * 6.283) + 0.26 * Math.sin(t * 43.98 + 1.1),
                 0.62 * Math.sin(t * 12.566 + 0.4) + 0.26 * Math.sin(t * 31.4)];
       }
+      if (k === 'speed') {                       // one line, two speeds: a dose step
+        /* Collinear on purpose: a corner would put its own blob at the boundary
+           and hide what the dose smoothing does. Fast half = ~12 px per sample,
+           slow half = ~0.12, so the dwell rate steps by ~100x with no kink. */
+        return t < 0.01 ? [-0.8 + 0.8 * (t / 0.01), 0.2] : [0.8 * ((t - 0.01) / 0.99), 0.2];
+      }
       if (t < 0.5) return [-0.6 + 1.2 * (t / 0.5), -0.5];        // a slow line
       return [-0.02 + 0.04 * ((t - 0.5) / 0.5), -0.5];           // ...then a creep
     };
