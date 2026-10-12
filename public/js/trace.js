@@ -31,7 +31,6 @@ function setTarget(t) {
 const PX = new Float32Array(MAXN);
 const PY = new Float32Array(MAXN);
 const SEGR = new Float32Array(MAXN);   // raw per-sample step, in pixels
-const DOSE = new Float32Array(MAXN);   // this frame's dwell rate per sample, 1/v
 /* Segment indices grouped by brightness bucket. Building these in the same
    pass that maps samples to pixels means the whole trace is produced with
    ONE pass over the samples plus one canvas op per drawn segment, instead of
@@ -201,23 +200,21 @@ function drawTrace(L, R, capacity, n, live) {
 
   const blanking = S.blanking;
   const ref = Math.max(refSpeed > 0 ? refSpeed : T.plot * 0.01, T.plot * 0.0004);
-  /* Which ends need a round cap (see VERT_BEAM). Three reasons, and the shader
-     cannot know any of them: the segment is shorter than the spot; the neighbour
-     at that end was dropped by blanking, so nothing else will light the gap's
-     edge; or the path turns hard there, where the two bands leave a wedge outside
-     the turn that neither covers. Everything else tiles. */
+  /* Which ends need a round cap (see VERT_BEAM). The shader cannot know either
+     of these: the segment is shorter than the spot, or the neighbour at that end
+     was dropped by velocity blanking, so nothing else will round off the gap's
+     edge. Everything else tiles.
+
+     A third reason was tried and reverted: giving a cap to every end where the
+     path turns more than 40 degrees. It fills the outside of a sharp bend (which
+     a plain cap does, badly — see the handoff on the wedge), but measured on real
+     material it fires on 19-24 % of ALL joints (oscillofun at 20/40/70/110 s,
+     2048 window), so a quarter of the segments deposit twice at their ends. That
+     is beading, and it was visible in a dense passage: same frozen frame ink
+     1264159 -> 794133 at 20 s and 1136088 -> 587639 at 70 s without it. */
   const capSigma = sigmaFor(S.lineWidth);
   const capReach = capSigma * 3;
   const shortStep = capSigma * 2;
-  const TURN_COS = Math.cos(40 * Math.PI / 180);
-  const turnAt = (i) => {
-    if (i < 1 || i + 1 >= n) return 1;
-    const ax = PX[i] - PX[i - 1], ay = PY[i] - PY[i - 1];
-    const bx = PX[i + 1] - PX[i], by = PY[i + 1] - PY[i];
-    const la = Math.sqrt(ax * ax + ay * ay), lb = Math.sqrt(bx * bx + by * by);
-    if (la < 1e-6 || lb < 1e-6) return 1;
-    return (ax * bx + ay * by) / (la * lb);
-  };
   const droppedAt = (j) => blanking && j >= 1 && j < n && SEGR[j] > blankAt;
   /* ONLY a numerical floor: it keeps ref/s finite when a segment does not move
      at all. It is deliberately tiny — anything comparable to the mean beam step
@@ -251,53 +248,35 @@ function drawTrace(L, R, capacity, n, live) {
       const dx = x - prevX, dy = y - prevY;
       const s = Math.sqrt(dx * dx + dy * dy);
       SEGR[i] = s;
-      DOSE[i] = ref / (s + eps);      // the dwell rate this sample owns
       total += s;
     }
     prevX = x;
     prevY = y;
   }
 
-  /* ---- pass 2: deposit, with the dose integrated over the spot ---------
+  /* ---- pass 2: deposit, with the dose smoothed along the path ---------
      Brightness is 1/speed, and on a REAL tube that is a property of a stroke:
      the beam lingers along a slow one and races through a fast one. Sample by
      sample, though, the step jitters (the trace of an audio signal is not a
      smooth curve at 44 kHz), so a raw 1/step flickers at the sample pitch and
      the trace comes out BEADED — a string of little dots, which is exactly what
-     it looked like.
+     it looked like. A phosphor does not see individual samples either: the spot
+     is a few pixels wide, so what it integrates is the average speed over its
+     own width. That is the ±3 sample box below, and it is why the dashes are
+     stroke-length rather than dot-length.
 
-     What the phosphor does is integrate the DWELL RATE over its own footprint: a
-     few pixels of path, not a fixed number of samples. So the average below runs
-     over the samples within ~2σ of PATH (measured with the steps themselves), and
-     it averages the dose rather than the speed. Those are not the same thing:
-     averaging the speed and inverting is a HARMONIC mean of the dwell, which
-     weights a dash boundary toward the fast side and washes the dashes out, while
-     the integral is dominated by the side the beam lingered on. Measured on a
-     synthetic collinear speed change (11.6 px per sample, then 0.12): the old
-     ±3-sample box ramped over three samples = 35 px of path where the spot is
-     3-5 px. The ±3 cap stays as a bound for very slow beams, where the window
-     would otherwise walk tens of samples — the dose there is saturated, so it
-     cannot show — and it keeps this loop at a fixed small cost. */
-  const span = sigmaFor(S.lineWidth) * 2;
+     A version that integrated the DWELL (1/v) over ~2σ of path instead, so that a
+     dash boundary lands within one sample at any speed, was measured and then
+     reverted: it sharpens exactly this, and at the sample steps real dense
+     material has (mean 9.6–18 px) that reads as more dashes, not fewer. The
+     numbers are in the handoff. */
   for (let i = 1; i < n; i++) {
     const s = SEGR[i];
     {
-      let wsum = 0, dsum = 0, dist = 0;
-      for (let j = i; j >= 1 && i - j <= 3; j--) {
-        if (j < i) { dist += SEGR[j + 1]; if (dist > span) break; }
-        const wgt = SEGR[j];
-        wsum += wgt;
-        dsum += wgt * DOSE[j];
-      }
-      dist = 0;
-      for (let j = i + 1; j < n && j - i <= 3; j++) {
-        dist += SEGR[j];
-        if (dist > span) break;
-        const wgt = SEGR[j];
-        wsum += wgt;
-        dsum += wgt * DOSE[j];
-      }
-      const doseHere = wsum > 0 ? dsum / wsum : DOSE[i];
+      const j0 = i > 3 ? i - 3 : 1, j1 = i + 3 < n ? i + 3 : n - 1;
+      let sum = 0;
+      for (let j = j0; j <= j1; j++) sum += SEGR[j];
+      const sSmooth = sum / (j1 - j0 + 1);
       const x = PX[i];
       const y = PY[i];
       const prevX = PX[i - 1];
@@ -316,7 +295,7 @@ function drawTrace(L, R, capacity, n, live) {
            ≈ 0.01 px), not a display floor — a floor near the mean step would
            flatten the whole law into a 2x range and the picture would read as a
            uniformly bright web whose contrast comes from self-overlap instead. */
-        const dose = doseHere;                  // dwell integrated over the spot
+        const dose = ref / (sSmooth + eps);     // 1/v, in units of the mean step
         if (dose > doseMax) doseMax = dose;
         if (T.gl) {
           /* Energy model: the same 1/v law, but it ADDS — no ladder to quantise
@@ -331,8 +310,8 @@ function drawTrace(L, R, capacity, n, live) {
             T.gl.segData[o + 3] = y;
             T.gl.segData[o + 4] = Math.min(dose, 64);
             const short = s < shortStep;
-            T.gl.segData[o + 5] = (short || droppedAt(i - 1) || turnAt(i - 1) < TURN_COS) ? capReach : 0;
-            T.gl.segData[o + 6] = (short || droppedAt(i + 1) || turnAt(i) < TURN_COS) ? capReach : 0;
+            T.gl.segData[o + 5] = (short || droppedAt(i - 1)) ? capReach : 0;
+            T.gl.segData[o + 6] = (short || droppedAt(i + 1)) ? capReach : 0;
             segN++;
           }
         } else if (blanking) {

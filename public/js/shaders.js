@@ -81,10 +81,13 @@ void main() {
      An end still needs its cap where there is nothing to tile WITH:
        - the segment is shorter than the spot (a beam that lingered: the ball),
        - the neighbour at that end was DROPPED by velocity blanking (nothing else
-         would light the gap's edge, and a raw cut edge is not what a spot does),
-       - the path turns hard there (the two bands leave a wedge outside the turn
-         that neither of them covers).
-     The caller knows all three; the shader only knows the two numbers. */
+         would round off the gap's edge, and a raw cut edge is not what a spot
+         does).
+     The caller knows both; the shader only knows the two numbers. A third case —
+     a hard turn, where the two bands leave a wedge outside the turn that neither
+     covers — was tried and reverted: it fires on a fifth to a quarter of the
+     joints of real material, which deposits those segments twice and beads. The
+     wedge needs its own primitive; the handoff has the numbers. */
   float capA = aCapA;
   float capB = aCapB;
   float wide = sigma * 3.0;

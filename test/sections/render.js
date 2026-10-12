@@ -86,21 +86,6 @@ async function renderTests(pw, rq = '') {
         return [0.62 * Math.sin(t * 6.283) + 0.26 * Math.sin(t * 43.98 + 1.1),
                 0.62 * Math.sin(t * 12.566 + 0.4) + 0.26 * Math.sin(t * 31.4)];
       }
-      if (k === 'speed') {                       // one line, two speeds: a dose step
-        /* Collinear on purpose: a corner would put its own blob at the boundary
-           and hide what the dose smoothing does. Fast half = ~12 px per sample,
-           slow half = ~0.12, so the dwell rate steps by ~100x with no kink. */
-        return t < 0.01 ? [-0.8 + 0.8 * (t / 0.01), 0.2] : [0.8 * ((t - 0.01) / 0.99), 0.2];
-      }
-      if (k === 'bend') {                        // two FAST arms, a 90 degree turn
-        /* Same pixel speed on both arms, so the same dose: any brightness
-           difference around the turn is geometry. Fast, so the arms land
-           mid-grey instead of saturating, and blanking off (a ~15 px step is
-           ~40x the frame mean and would simply be dropped). */
-        if (t < 0.02) return [-0.8 + 1.0 * (t / 0.02), 0];
-        if (t < 0.04) return [0.2, -1.0 * ((t - 0.02) / 0.02)];
-        return [0.2, -1.0];
-      }
       if (t < 0.5) return [-0.6 + 1.2 * (t / 0.5), -0.5];        // a slow line
       return [-0.02 + 0.04 * ((t - 0.5) / 0.5), -0.5];           // ...then a creep
     };
