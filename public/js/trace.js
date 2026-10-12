@@ -200,22 +200,6 @@ function drawTrace(L, R, capacity, n, live) {
 
   const blanking = S.blanking;
   const ref = Math.max(refSpeed > 0 ? refSpeed : T.plot * 0.01, T.plot * 0.0004);
-  /* Which ends need a round cap (see VERT_BEAM). The shader cannot know either
-     of these: the segment is shorter than the spot, or the neighbour at that end
-     was dropped by velocity blanking, so nothing else will round off the gap's
-     edge. Everything else tiles.
-
-     A third reason was tried and reverted: giving a cap to every end where the
-     path turns more than 40 degrees. It fills the outside of a sharp bend (which
-     a plain cap does, badly — see the handoff on the wedge), but measured on real
-     material it fires on 19-24 % of ALL joints (oscillofun at 20/40/70/110 s,
-     2048 window), so a quarter of the segments deposit twice at their ends. That
-     is beading, and it was visible in a dense passage: same frozen frame ink
-     1264159 -> 794133 at 20 s and 1136088 -> 587639 at 70 s without it. */
-  const capSigma = sigmaFor(S.lineWidth);
-  const capReach = capSigma * 3;
-  const shortStep = capSigma * 2;
-  const droppedAt = (j) => blanking && j >= 1 && j < n && SEGR[j] > blankAt;
   /* ONLY a numerical floor: it keeps ref/s finite when a segment does not move
      at all. It is deliberately tiny — anything comparable to the mean beam step
      would compress the 1/v law (see the dose below). */
@@ -303,15 +287,12 @@ function drawTrace(L, R, capacity, n, live) {
              only stops a stationary beam from overflowing a half float; 64 is
              already far past full brightness. */
           if (segN < T.gl.maxSegments) {
-            const o = segN * 7;
+            const o = segN * 5;
             T.gl.segData[o] = prevX;
             T.gl.segData[o + 1] = prevY;
             T.gl.segData[o + 2] = x;
             T.gl.segData[o + 3] = y;
             T.gl.segData[o + 4] = Math.min(dose, 64);
-            const short = s < shortStep;
-            T.gl.segData[o + 5] = (short || droppedAt(i - 1)) ? capReach : 0;
-            T.gl.segData[o + 6] = (short || droppedAt(i + 1)) ? capReach : 0;
             segN++;
           }
         } else if (blanking) {
@@ -347,14 +328,12 @@ function drawTrace(L, R, capacity, n, live) {
     if (S.beamDot && segN < T.gl.maxSegments) {
       // A zero-length segment with a lot of energy IS a stationary beam: the
       // spot profile makes the dot, and the cloud makes it a flare.
-      const o = segN * 7;
+      const o = segN * 5;
       T.gl.segData[o] = PX[n - 1];
       T.gl.segData[o + 1] = PY[n - 1];
       T.gl.segData[o + 2] = PX[n - 1] + 0.01;
       T.gl.segData[o + 3] = PY[n - 1] + 0.01;
       T.gl.segData[o + 4] = 4;
-      T.gl.segData[o + 5] = capReach;
-      T.gl.segData[o + 6] = capReach;
       segN++;
     }
     T.gl.deposit(segN);

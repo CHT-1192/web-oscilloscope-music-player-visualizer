@@ -43,8 +43,6 @@ in vec2 aCorner;                 // the unit quad, 6 vertices, shared by all ins
 in vec2 aP0;                     // segment start, device pixels
 in vec2 aP1;                     // segment end
 in float aEnergy;                // exposure for this segment (∝ 1/speed, 0 = blanked)
-in float aCapA;                  // how far past the START this instance reaches, px
-in float aCapB;                  // ... and past the END
 uniform vec2 uViewport;
 uniform float uHalfWidth;        // Gaussian sigma, in pixels (the beam's own width)
 uniform float uExposure;         // energy per unit of 1/v, per frame
@@ -69,30 +67,17 @@ void main() {
   vec2 dir = len > 0.0001 ? seg / len : vec2(1.0, 0.0);
   vec2 nrm = vec2(-dir.y, dir.x);
   float sigma = uHalfWidth;
-  /* How far the quad reaches past each end comes from the caller, and it is the
-     difference between a stroke and a string of beads. The deposit is a disc of
-     radius 3 sigma around the NEAREST point of the segment, so an end that is
-     extended lays a full disc on the joint — and when BOTH neighbours do that,
-     the joint is deposited twice, once per sample, which is the beading. So a
-     plain joint between two long segments reaches exactly to its own ends and
-     they tile: two quads then share the perpendicular edge through the joint and
-     the path is deposited once.
-
-     An end still needs its cap where there is nothing to tile WITH:
-       - the segment is shorter than the spot (a beam that lingered: the ball),
-       - the neighbour at that end was DROPPED by velocity blanking (nothing else
-         would round off the gap's edge, and a raw cut edge is not what a spot
-         does).
-     The caller knows both; the shader only knows the two numbers. A third case —
-     a hard turn, where the two bands leave a wedge outside the turn that neither
-     covers — was tried and reverted: it fires on a fifth to a quarter of the
-     joints of real material, which deposits those segments twice and beads. The
-     wedge needs its own primitive; the handoff has the numbers. */
-  float capA = aCapA;
-  float capB = aCapB;
+  /* Every segment lays its own 3 sigma round end at BOTH endpoints, so a joint
+     between two samples is lit by both of them. That was changed for a while —
+     long segments were made to tile exactly, each reaching only to its own ends,
+     which deposits the path exactly once and removes a comb at the sample pitch
+     on a synthetic circle (5.45 -> 0.01) — and then changed back, because the
+     tiling also breaks the stroke open at every joint, and the continuous look
+     with the joint highlight is what the material wants. See the handoff. */
+  float reach = sigma * 3.0;
   float wide = sigma * 3.0;
-  vec2 centre = (aP0 + aP1) * 0.5 + dir * ((capB - capA) * 0.5);
-  vec2 along = dir * ((len + capA + capB) * 0.5);
+  vec2 centre = (aP0 + aP1) * 0.5;
+  vec2 along = dir * (len * 0.5 + reach);
   vec2 across = nrm * wide;
   vec2 p = centre + along * aCorner.x + across * aCorner.y;
 

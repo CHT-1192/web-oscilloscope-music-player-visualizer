@@ -106,7 +106,6 @@ export function probeGL() {
     r.setTau(1);
     const seg = r.segData;
     seg[0] = 10; seg[1] = 32; seg[2] = 54; seg[3] = 32; seg[4] = 1;
-    seg[5] = 4.5; seg[6] = 4.5;         // 3σ at the sigma set below, both ends
     r.decay(1 / 60);
     r.deposit(1);
     r.present();
@@ -171,7 +170,7 @@ export function createGL(canvas) {
 
   const MAX_SEG = 32768;
   const segBuf = gl.createBuffer();
-  const segData = new Float32Array(MAX_SEG * 7);   // x0,y0,x1,y1,energy,capA,capB
+  const segData = new Float32Array(MAX_SEG * 5);   // x0,y0,x1,y1,energy
   gl.bindBuffer(gl.ARRAY_BUFFER, segBuf);
   gl.bufferData(gl.ARRAY_BUFFER, segData.byteLength, gl.DYNAMIC_DRAW);
 
@@ -323,17 +322,15 @@ export function createGL(canvas) {
     if (!n) return;
     state.segments = n;
     gl.bindBuffer(gl.ARRAY_BUFFER, segBuf);
-    gl.bufferSubData(gl.ARRAY_BUFFER, 0, segData, 0, n * 7);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, segData, 0, n * 5);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
     gl.viewport(0, 0, target.w, target.h);
     gl.useProgram(progBeam.p);
-    const stride = 7 * 4;
+    const stride = 5 * 4;
     const p0 = gl.getAttribLocation(progBeam.p, 'aP0');
     const p1 = gl.getAttribLocation(progBeam.p, 'aP1');
     const en = gl.getAttribLocation(progBeam.p, 'aEnergy');
-    const ca = gl.getAttribLocation(progBeam.p, 'aCapA');
-    const cb = gl.getAttribLocation(progBeam.p, 'aCapB');
     gl.enableVertexAttribArray(p0);
     gl.vertexAttribPointer(p0, 2, gl.FLOAT, false, stride, 0);
     gl.vertexAttribDivisor(p0, 1);
@@ -343,12 +340,6 @@ export function createGL(canvas) {
     gl.enableVertexAttribArray(en);
     gl.vertexAttribPointer(en, 1, gl.FLOAT, false, stride, 16);
     gl.vertexAttribDivisor(en, 1);
-    gl.enableVertexAttribArray(ca);
-    gl.vertexAttribPointer(ca, 1, gl.FLOAT, false, stride, 20);
-    gl.vertexAttribDivisor(ca, 1);
-    gl.enableVertexAttribArray(cb);
-    gl.vertexAttribPointer(cb, 1, gl.FLOAT, false, stride, 24);
-    gl.vertexAttribDivisor(cb, 1);
 
     bindQuad(progBeam, gl.getAttribLocation(progBeam.p, 'aCorner'));
     gl.uniform2f(progBeam.uniforms.uViewport, target.w, target.h);

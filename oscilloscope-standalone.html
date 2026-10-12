@@ -1999,8 +1999,6 @@ in vec2 aCorner;                 // the unit quad, 6 vertices, shared by all ins
 in vec2 aP0;                     // segment start, device pixels
 in vec2 aP1;                     // segment end
 in float aEnergy;                // exposure for this segment (∝ 1/speed, 0 = blanked)
-in float aCapA;                  // how far past the START this instance reaches, px
-in float aCapB;                  // ... and past the END
 uniform vec2 uViewport;
 uniform float uHalfWidth;        // Gaussian sigma, in pixels (the beam's own width)
 uniform float uExposure;         // energy per unit of 1/v, per frame
@@ -2025,30 +2023,17 @@ void main() {
   vec2 dir = len > 0.0001 ? seg / len : vec2(1.0, 0.0);
   vec2 nrm = vec2(-dir.y, dir.x);
   float sigma = uHalfWidth;
-  /* How far the quad reaches past each end comes from the caller, and it is the
-     difference between a stroke and a string of beads. The deposit is a disc of
-     radius 3 sigma around the NEAREST point of the segment, so an end that is
-     extended lays a full disc on the joint — and when BOTH neighbours do that,
-     the joint is deposited twice, once per sample, which is the beading. So a
-     plain joint between two long segments reaches exactly to its own ends and
-     they tile: two quads then share the perpendicular edge through the joint and
-     the path is deposited once.
-
-     An end still needs its cap where there is nothing to tile WITH:
-       - the segment is shorter than the spot (a beam that lingered: the ball),
-       - the neighbour at that end was DROPPED by velocity blanking (nothing else
-         would round off the gap's edge, and a raw cut edge is not what a spot
-         does).
-     The caller knows both; the shader only knows the two numbers. A third case —
-     a hard turn, where the two bands leave a wedge outside the turn that neither
-     covers — was tried and reverted: it fires on a fifth to a quarter of the
-     joints of real material, which deposits those segments twice and beads. The
-     wedge needs its own primitive; the handoff has the numbers. */
-  float capA = aCapA;
-  float capB = aCapB;
+  /* Every segment lays its own 3 sigma round end at BOTH endpoints, so a joint
+     between two samples is lit by both of them. That was changed for a while —
+     long segments were made to tile exactly, each reaching only to its own ends,
+     which deposits the path exactly once and removes a comb at the sample pitch
+     on a synthetic circle (5.45 -> 0.01) — and then changed back, because the
+     tiling also breaks the stroke open at every joint, and the continuous look
+     with the joint highlight is what the material wants. See the handoff. */
+  float reach = sigma * 3.0;
   float wide = sigma * 3.0;
-  vec2 centre = (aP0 + aP1) * 0.5 + dir * ((capB - capA) * 0.5);
-  vec2 along = dir * ((len + capA + capB) * 0.5);
+  vec2 centre = (aP0 + aP1) * 0.5;
+  vec2 along = dir * (len * 0.5 + reach);
   vec2 across = nrm * wide;
   vec2 p = centre + along * aCorner.x + across * aCorner.y;
 
@@ -2306,7 +2291,6 @@ function probeGL() {
     r.setTau(1);
     const seg = r.segData;
     seg[0] = 10; seg[1] = 32; seg[2] = 54; seg[3] = 32; seg[4] = 1;
-    seg[5] = 4.5; seg[6] = 4.5;         // 3σ at the sigma set below, both ends
     r.decay(1 / 60);
     r.deposit(1);
     r.present();
@@ -2371,7 +2355,7 @@ function createGL(canvas) {
 
   const MAX_SEG = 32768;
   const segBuf = gl.createBuffer();
-  const segData = new Float32Array(MAX_SEG * 7);   // x0,y0,x1,y1,energy,capA,capB
+  const segData = new Float32Array(MAX_SEG * 5);   // x0,y0,x1,y1,energy
   gl.bindBuffer(gl.ARRAY_BUFFER, segBuf);
   gl.bufferData(gl.ARRAY_BUFFER, segData.byteLength, gl.DYNAMIC_DRAW);
 
@@ -2523,17 +2507,15 @@ function createGL(canvas) {
     if (!n) return;
     state.segments = n;
     gl.bindBuffer(gl.ARRAY_BUFFER, segBuf);
-    gl.bufferSubData(gl.ARRAY_BUFFER, 0, segData, 0, n * 7);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, segData, 0, n * 5);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
     gl.viewport(0, 0, target.w, target.h);
     gl.useProgram(progBeam.p);
-    const stride = 7 * 4;
+    const stride = 5 * 4;
     const p0 = gl.getAttribLocation(progBeam.p, 'aP0');
     const p1 = gl.getAttribLocation(progBeam.p, 'aP1');
     const en = gl.getAttribLocation(progBeam.p, 'aEnergy');
-    const ca = gl.getAttribLocation(progBeam.p, 'aCapA');
-    const cb = gl.getAttribLocation(progBeam.p, 'aCapB');
     gl.enableVertexAttribArray(p0);
     gl.vertexAttribPointer(p0, 2, gl.FLOAT, false, stride, 0);
     gl.vertexAttribDivisor(p0, 1);
@@ -2543,12 +2525,6 @@ function createGL(canvas) {
     gl.enableVertexAttribArray(en);
     gl.vertexAttribPointer(en, 1, gl.FLOAT, false, stride, 16);
     gl.vertexAttribDivisor(en, 1);
-    gl.enableVertexAttribArray(ca);
-    gl.vertexAttribPointer(ca, 1, gl.FLOAT, false, stride, 20);
-    gl.vertexAttribDivisor(ca, 1);
-    gl.enableVertexAttribArray(cb);
-    gl.vertexAttribPointer(cb, 1, gl.FLOAT, false, stride, 24);
-    gl.vertexAttribDivisor(cb, 1);
 
     bindQuad(progBeam, gl.getAttribLocation(progBeam.p, 'aCorner'));
     gl.uniform2f(progBeam.uniforms.uViewport, target.w, target.h);
@@ -3164,22 +3140,6 @@ function drawTrace(L, R, capacity, n, live) {
 
   const blanking = S.blanking;
   const ref = Math.max(refSpeed > 0 ? refSpeed : T.plot * 0.01, T.plot * 0.0004);
-  /* Which ends need a round cap (see VERT_BEAM). The shader cannot know either
-     of these: the segment is shorter than the spot, or the neighbour at that end
-     was dropped by velocity blanking, so nothing else will round off the gap's
-     edge. Everything else tiles.
-
-     A third reason was tried and reverted: giving a cap to every end where the
-     path turns more than 40 degrees. It fills the outside of a sharp bend (which
-     a plain cap does, badly — see the handoff on the wedge), but measured on real
-     material it fires on 19-24 % of ALL joints (oscillofun at 20/40/70/110 s,
-     2048 window), so a quarter of the segments deposit twice at their ends. That
-     is beading, and it was visible in a dense passage: same frozen frame ink
-     1264159 -> 794133 at 20 s and 1136088 -> 587639 at 70 s without it. */
-  const capSigma = sigmaFor(S.lineWidth);
-  const capReach = capSigma * 3;
-  const shortStep = capSigma * 2;
-  const droppedAt = (j) => blanking && j >= 1 && j < n && SEGR[j] > blankAt;
   /* ONLY a numerical floor: it keeps ref/s finite when a segment does not move
      at all. It is deliberately tiny — anything comparable to the mean beam step
      would compress the 1/v law (see the dose below). */
@@ -3267,15 +3227,12 @@ function drawTrace(L, R, capacity, n, live) {
              only stops a stationary beam from overflowing a half float; 64 is
              already far past full brightness. */
           if (segN < T.gl.maxSegments) {
-            const o = segN * 7;
+            const o = segN * 5;
             T.gl.segData[o] = prevX;
             T.gl.segData[o + 1] = prevY;
             T.gl.segData[o + 2] = x;
             T.gl.segData[o + 3] = y;
             T.gl.segData[o + 4] = Math.min(dose, 64);
-            const short = s < shortStep;
-            T.gl.segData[o + 5] = (short || droppedAt(i - 1)) ? capReach : 0;
-            T.gl.segData[o + 6] = (short || droppedAt(i + 1)) ? capReach : 0;
             segN++;
           }
         } else if (blanking) {
@@ -3311,14 +3268,12 @@ function drawTrace(L, R, capacity, n, live) {
     if (S.beamDot && segN < T.gl.maxSegments) {
       // A zero-length segment with a lot of energy IS a stationary beam: the
       // spot profile makes the dot, and the cloud makes it a flare.
-      const o = segN * 7;
+      const o = segN * 5;
       T.gl.segData[o] = PX[n - 1];
       T.gl.segData[o + 1] = PY[n - 1];
       T.gl.segData[o + 2] = PX[n - 1] + 0.01;
       T.gl.segData[o + 3] = PY[n - 1] + 0.01;
       T.gl.segData[o + 4] = 4;
-      T.gl.segData[o + 5] = capReach;
-      T.gl.segData[o + 6] = capReach;
       segN++;
     }
     T.gl.deposit(segN);

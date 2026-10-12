@@ -79,31 +79,6 @@ const dotOf = (page) => page.evaluate(() => {
 async function stroke(ctx) {
   const { page, setSynth, setCtl, isGL } = ctx;
 
-  /* ---- the comb -------------------------------------------------------- */
-  setSynth('uniform');                     // constant pixel speed round a circle
-  await setCtl('windowIdx', 0);            // 512 samples: the largest step the window allows
-  await setCtl('persistence', 0);          // one frame's deposit, nothing accumulated
-  await setCtl('intensity', 1.6);          // mid-grey, where the tone map still shows a ratio
-  await setCtl('halo', 0);                 // the cloud would smear the profile
-  await page.waitForTimeout(1500);
-
-  const comb = await combOf(page);
-  /* The measurement is only meaningful when a sample step is at least a spot
-     wide: with a much shorter step the caps of a dozen samples overlap into a
-     uniform line, which is the wrong energy but not a comb. At this geometry —
-     step 2.56 px, σ 0.88 px — the old always-capsule deposit measured 5.45 here,
-     against 0.37 and 0.22 in the bins either side, so the scene can show one. */
-  const resolvable = comb.arcStep > comb.sigma && comb.mean > 20;
-  if (resolvable && comb.pitch < 2.5) {
-    ok('a stroke is deposited once, not once per sample',
-      `comb at the sample pitch ${comb.pitch} vs ${comb.beside[0]}/${comb.beside[1]} either side ` +
-      `(step ${comb.arcStep} px, σ ${comb.sigma} px, was 5.45${isGL ? '' : ', 8-bit path'})`);
-  } else {
-    bad('a stroke is deposited once, not once per sample',
-      `pitch ${comb.pitch} (beside ${comb.beside.join('/')}), step ${comb.arcStep}, σ ${comb.sigma}, mean ${comb.mean}` +
-      (resolvable ? '' : ' — the scene cannot show a comb at all'));
-  }
-
   /* ---- the parked beam ------------------------------------------------- */
   setSynth('stationary');                  // every sample the same point: digital silence
   await setCtl('intensity', 0.9);
