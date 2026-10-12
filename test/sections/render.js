@@ -20,6 +20,7 @@ const h = require('../harness.js');
 const { ok, bad, section, findChromium } = h;
 const { SYNTH } = require('./render-synth.js');
 const { stroke } = require('./render-stroke.js');
+const { keys } = require('./render-keys.js');
 const blanking = require('./render-blanking.js');
 const halo = require('./render-halo.js');
 const model = require('./render-model.js');
@@ -91,6 +92,15 @@ async function renderTests(pw, rq = '') {
            slow half = ~0.12, so the dwell rate steps by ~100x with no kink. */
         return t < 0.01 ? [-0.8 + 0.8 * (t / 0.01), 0.2] : [0.8 * ((t - 0.01) / 0.99), 0.2];
       }
+      if (k === 'bend') {                        // two FAST arms, a 90 degree turn
+        /* Same pixel speed on both arms, so the same dose: any brightness
+           difference around the turn is geometry. Fast, so the arms land
+           mid-grey instead of saturating, and blanking off (a ~15 px step is
+           ~40x the frame mean and would simply be dropped). */
+        if (t < 0.02) return [-0.8 + 1.0 * (t / 0.02), 0];
+        if (t < 0.04) return [0.2, -1.0 * ((t - 0.02) / 0.02)];
+        return [0.2, -1.0];
+      }
       if (t < 0.5) return [-0.6 + 1.2 * (t / 0.5), -0.5];        // a slow line
       return [-0.02 + 0.04 * ((t - 0.5) / 0.5), -0.5];           // ...then a creep
     };
@@ -117,6 +127,7 @@ async function renderTests(pw, rq = '') {
   await audio(ctx);
   await surface(ctx);
   await theme(ctx);
+  await keys(ctx);
 
   await browser.close();
 }

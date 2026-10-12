@@ -43,6 +43,8 @@ in vec2 aCorner;                 // the unit quad, 6 vertices, shared by all ins
 in vec2 aP0;                     // segment start, device pixels
 in vec2 aP1;                     // segment end
 in float aEnergy;                // exposure for this segment (∝ 1/speed, 0 = blanked)
+in float aCapA;                  // how far past the START this instance reaches, px
+in float aCapB;                  // ... and past the END
 uniform vec2 uViewport;
 uniform float uHalfWidth;        // Gaussian sigma, in pixels (the beam's own width)
 uniform float uExposure;         // energy per unit of 1/v, per frame
@@ -67,26 +69,28 @@ void main() {
   vec2 dir = len > 0.0001 ? seg / len : vec2(1.0, 0.0);
   vec2 nrm = vec2(-dir.y, dir.x);
   float sigma = uHalfWidth;
-  /* How far the quad reaches past its ends is the difference between a stroke
-     and a string of beads, and it is a property of the deposit rather than of
-     the caller, so the rule lives here. The deposit is a disc of radius 3σ
-     around the NEAREST point of the segment: an end that is extended lays a full
-     disc on the joint, and when both neighbours do that the joint is deposited
-     twice, once per SAMPLE — that is the beading. A segment longer than the spot
-     therefore reaches exactly to its own ends, so that two neighbours share the
-     perpendicular edge through the joint and the path is deposited once. One
-     shorter than the spot is a beam that lingered, where the round cap is the
-     ball you are supposed to see. */
-  float reach = len < sigma * 2.0 ? sigma * 3.0 : 0.0;
-  /* Two different extents. ACROSS the path the quad always has to cover 3σ, or
-     the Gaussian cross-section has nowhere to live (and a reach of 0 there would
-     make the quad a zero-area sliver, which is how this first went wrong:
-     nothing was drawn at all). ALONG the path it covers the segment plus the cap
-     decided above. */
+  /* How far the quad reaches past each end comes from the caller, and it is the
+     difference between a stroke and a string of beads. The deposit is a disc of
+     radius 3 sigma around the NEAREST point of the segment, so an end that is
+     extended lays a full disc on the joint — and when BOTH neighbours do that,
+     the joint is deposited twice, once per sample, which is the beading. So a
+     plain joint between two long segments reaches exactly to its own ends and
+     they tile: two quads then share the perpendicular edge through the joint and
+     the path is deposited once.
+
+     An end still needs its cap where there is nothing to tile WITH:
+       - the segment is shorter than the spot (a beam that lingered: the ball),
+       - the neighbour at that end was DROPPED by velocity blanking (nothing else
+         would light the gap's edge, and a raw cut edge is not what a spot does),
+       - the path turns hard there (the two bands leave a wedge outside the turn
+         that neither of them covers).
+     The caller knows all three; the shader only knows the two numbers. */
+  float capA = aCapA;
+  float capB = aCapB;
   float wide = sigma * 3.0;
-  vec2 along = dir * (len * 0.5 + reach);
+  vec2 centre = (aP0 + aP1) * 0.5 + dir * ((capB - capA) * 0.5);
+  vec2 along = dir * ((len + capA + capB) * 0.5);
   vec2 across = nrm * wide;
-  vec2 centre = (aP0 + aP1) * 0.5;
   vec2 p = centre + along * aCorner.x + across * aCorner.y;
 
   vPos = p;

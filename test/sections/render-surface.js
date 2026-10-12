@@ -103,7 +103,13 @@ async function surface(ctx) {
   };
 
   const ghostOn = await ghostAfterRun(100);
+  /* The same setting twice, to measure the metric's OWN spread: the audio
+     position is pinned but the frame the pause lands on is not, and this is a
+     live reading of a moving picture. Without this control a loaded machine
+     reads a difference the slider did not cause. */
+  const ghostOn2 = await ghostAfterRun(100);
   const ghostOff = await ghostAfterRun(0);
+  const ghostSpread = Math.abs(ghostOn - ghostOn2);
   /* The floor is a property of an 8-bit backing store: `destination-out` rounds,
      so everything at or below 1/(2a) is a fixed point and never fades. The float
      accumulation buffer has no such value, which is the whole reason the energy
@@ -118,9 +124,10 @@ async function surface(ctx) {
        alpha 9-64 band and failed: that band is just legitimately dim afterglow,
        and while paused the frozen frame keeps being painted, so ink never
        disappears — the floor is not what that metric can see.) */
-    if (Math.abs(ghostOn - ghostOff) < 1) {
+    if (Math.abs(ghostOn - ghostOff) <= Math.max(1, ghostSpread + 0.5)) {
       ok('the residue slider does nothing on the float path',
-        `${ghostOn}% vs ${ghostOff}% with the slider at 100 % and 0 %`);
+        `${ghostOn}% vs ${ghostOff}% at 100 % and 0 % (the same setting twice reads ` +
+        `${ghostOn}/${ghostOn2}, so this metric’s own spread is ${ghostSpread.toFixed(2)})`);
     } else {
       bad('the residue slider does nothing on the float path', `${ghostOn}% vs ${ghostOff}%`);
     }

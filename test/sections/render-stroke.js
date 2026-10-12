@@ -206,6 +206,73 @@ async function stroke(ctx) {
       if (b.getAttribute('aria-pressed') === 'false') b.click();
     }
   });
+
+  /* ---- the outboard side of a bend -------------------------------------- */
+  /* An end that has nothing to tile with still has to be a spot's round end. On
+     a bend the two bands leave a wedge outside the turn that neither of them
+     covers: measured 0.44x the arm's level before this, with the ink cut off
+     dead, and 1.4x after. The same clause also gives an end whose neighbour was
+     dropped by velocity blanking its cap, so a gap's edge fades over ~3 sigma
+     instead of stopping dead — that is fixed by construction rather than by a
+     measurement here, because a synthetic gap big enough to see is a gap the
+     rounding of the strip ends fills anyway. */
+  const rowOfArm = () => page.evaluate(() => {
+    const st = window.__scope.state;
+    const c = st.canvas;
+    const P = st.plot;
+    const d = window.__scope.readTrace(0, 0, c.w, c.h);
+    const al = (x, y) => (x < 0 || y < 0 || x >= c.w || y >= c.h) ? 0 : d[((y | 0) * c.w + (x | 0)) * 4 + 3];
+    let row = 0, best = -1;
+    for (let y = Math.round(P.y); y < Math.round(P.y + P.size); y++) {
+      let s = 0;
+      for (let x = Math.round(P.x); x < Math.round(P.x + P.size * 0.3); x++) s += al(x, y);
+      if (s > best) { best = s; row = y; }
+    }
+    return { row, col: Math.round(P.x + P.size * 0.5), x0: Math.round(P.x), size: Math.round(P.size) };
+  });
+
+  /* the bend: arm 1 right, then down. Outside the turn is up-left of it. */
+  setSynth('bend');
+  await setCtl('halo', 0);
+  await setCtl('persistence', 0);
+  await setCtl('intensity', 1.2);        // the fast arms land mid-grey at this
+  for (const t of ['trigger', 'blanking']) {
+    await page.evaluate((k) => {
+      const b = document.querySelector(`[data-toggle="${k}"]`);
+      if (b.getAttribute('aria-pressed') === 'true') b.click();
+    }, t);
+  }
+  await page.waitForTimeout(1700);
+  const bend = await page.evaluate((info) => {
+    const st = window.__scope.state;
+    const c = st.canvas;
+    const P = st.plot;
+    const d = window.__scope.readTrace(0, 0, c.w, c.h);
+    const al = (x, y) => (x < 0 || y < 0 || x >= c.w || y >= c.h) ? 0 : d[((y | 0) * c.w + (x | 0)) * 4 + 3];
+    let row = info.row, bendX = 0;
+    for (let x = Math.round(P.x + P.size * 0.4); x < Math.round(P.x + P.size); x++) if (al(x, row) > 8) bendX = x;
+    const armLevel = al(bendX - 120, row);
+    /* up-left of the turn, 2..6 px out: the wedge that had nothing in it */
+    let outMax = 0;
+    for (let a = 0; a < 12; a++) {
+      const ang = Math.PI + (a / 12) * (Math.PI / 2);        // the up-left quadrant
+      for (let r = 2; r <= 6; r++) {
+        outMax = Math.max(outMax, al(Math.round(bendX + Math.cos(ang) * r), Math.round(row + Math.sin(ang) * r)));
+      }
+    }
+    return { armLevel, outMax, ratio: armLevel ? +(outMax / armLevel).toFixed(2) : 0, bendX, row };
+  }, await rowOfArm());
+  if (bend.armLevel > 10 && bend.ratio >= 0.5) {
+    ok('the outside of a bend is lit, not cut off',
+      `outside ${bend.outMax} vs the arm's ${bend.armLevel} (${bend.ratio}x) 2-6 px out`);
+  } else {
+    bad('the outside of a bend is lit, not cut off', JSON.stringify(bend));
+  }
+
+  await page.evaluate(() => {
+    const b = document.querySelector('[data-toggle="blanking"]');
+    if (b.getAttribute('aria-pressed') === 'false') b.click();
+  });
 }
 
 module.exports = { stroke };

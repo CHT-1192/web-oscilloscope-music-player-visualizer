@@ -201,6 +201,24 @@ function drawTrace(L, R, capacity, n, live) {
 
   const blanking = S.blanking;
   const ref = Math.max(refSpeed > 0 ? refSpeed : T.plot * 0.01, T.plot * 0.0004);
+  /* Which ends need a round cap (see VERT_BEAM). Three reasons, and the shader
+     cannot know any of them: the segment is shorter than the spot; the neighbour
+     at that end was dropped by blanking, so nothing else will light the gap's
+     edge; or the path turns hard there, where the two bands leave a wedge outside
+     the turn that neither covers. Everything else tiles. */
+  const capSigma = sigmaFor(S.lineWidth);
+  const capReach = capSigma * 3;
+  const shortStep = capSigma * 2;
+  const TURN_COS = Math.cos(40 * Math.PI / 180);
+  const turnAt = (i) => {
+    if (i < 1 || i + 1 >= n) return 1;
+    const ax = PX[i] - PX[i - 1], ay = PY[i] - PY[i - 1];
+    const bx = PX[i + 1] - PX[i], by = PY[i + 1] - PY[i];
+    const la = Math.sqrt(ax * ax + ay * ay), lb = Math.sqrt(bx * bx + by * by);
+    if (la < 1e-6 || lb < 1e-6) return 1;
+    return (ax * bx + ay * by) / (la * lb);
+  };
+  const droppedAt = (j) => blanking && j >= 1 && j < n && SEGR[j] > blankAt;
   /* ONLY a numerical floor: it keeps ref/s finite when a segment does not move
      at all. It is deliberately tiny — anything comparable to the mean beam step
      would compress the 1/v law (see the dose below). */
@@ -306,12 +324,15 @@ function drawTrace(L, R, capacity, n, live) {
              only stops a stationary beam from overflowing a half float; 64 is
              already far past full brightness. */
           if (segN < T.gl.maxSegments) {
-            const o = segN * 5;
+            const o = segN * 7;
             T.gl.segData[o] = prevX;
             T.gl.segData[o + 1] = prevY;
             T.gl.segData[o + 2] = x;
             T.gl.segData[o + 3] = y;
             T.gl.segData[o + 4] = Math.min(dose, 64);
+            const short = s < shortStep;
+            T.gl.segData[o + 5] = (short || droppedAt(i - 1) || turnAt(i - 1) < TURN_COS) ? capReach : 0;
+            T.gl.segData[o + 6] = (short || droppedAt(i + 1) || turnAt(i) < TURN_COS) ? capReach : 0;
             segN++;
           }
         } else if (blanking) {
@@ -347,12 +368,14 @@ function drawTrace(L, R, capacity, n, live) {
     if (S.beamDot && segN < T.gl.maxSegments) {
       // A zero-length segment with a lot of energy IS a stationary beam: the
       // spot profile makes the dot, and the cloud makes it a flare.
-      const o = segN * 5;
+      const o = segN * 7;
       T.gl.segData[o] = PX[n - 1];
       T.gl.segData[o + 1] = PY[n - 1];
       T.gl.segData[o + 2] = PX[n - 1] + 0.01;
       T.gl.segData[o + 3] = PY[n - 1] + 0.01;
       T.gl.segData[o + 4] = 4;
+      T.gl.segData[o + 5] = capReach;
+      T.gl.segData[o + 6] = capReach;
       segN++;
     }
     T.gl.deposit(segN);

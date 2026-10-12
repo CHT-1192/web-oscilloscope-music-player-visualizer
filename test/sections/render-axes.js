@@ -46,10 +46,16 @@ async function axes(ctx) {
     const st = window.__scope.state;
     const c = st.canvas;
     const d = window.__scope.readTrace(0, 0, c.w, c.h);
+    /* Bright ink only: a long-persistence frame can leave a faint canvas-wide
+       glow, and an area that large moves an unweighted centroid to the middle
+       whatever the stroke is doing. */
     let sum = 0, n = 0;
     for (let y = 0; y < c.h; y++) {
       let row = 0;
-      for (let x = 0; x < c.w; x++) row += d[(y * c.w + x) * 4 + 3];
+      for (let x = 0; x < c.w; x++) {
+        const a = d[(y * c.w + x) * 4 + 3];
+        if (a >= 24) row += a;
+      }
       if (row) { sum += y * row; n += row; }
     }
     return { centroid: n ? +(sum / n).toFixed(1) : -1, centre: +(c.h / 2).toFixed(1), h: c.h };
